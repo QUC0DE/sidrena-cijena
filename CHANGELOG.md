@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.2] - 2026-09-27
+### Dodano
+- Gumb "Obriši sve cjenike i kreni ispočetka" u postavkama (briše datoteke i arhivu, vraća broj pohrane na 1).
+
 ## [1.0.1] - 2026-09-27
 ### Dodano
 - Automatska ažuriranja iz GitHub Releasesa.

@@ -17,6 +17,7 @@ Namijenjen je stranicama **bez WooCommercea** (usluge, digitalni materijali) i *
 - Automatsko generiranje CSV/XML kod svake promjene, a za proizvode i svaki radni dan u 6:30
 - Nazivi datoteka po propisu: `oblik_adresa_oznaka_brojpohrane_dd.mm.gggg_hh:mm`
 - Arhiva prethodnih cjenika (45 dana)
+- Gumb za brisanje svih cjenika i ponovni početak numeracije (npr. nakon testiranja)
 - REST: `/wp-json/cjenik/v1/stavke`, `/wp-json/cjenik/v1/datoteke`
 - WPGraphQL: root polje `cjenik`
 - Webhook za revalidaciju frontenda i action hook `sc_cjenik_azuriran`

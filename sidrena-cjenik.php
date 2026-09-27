@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sidrena cijena i cjenik
  * Description: Unos usluga i proizvoda s dodatnom (sidrenom) cijenom, automatsko generiranje CSV/XML cjenika prema NN 101/2026 i REST + WPGraphQL API za headless frontend.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * License: GPL-2.0-or-later
@@ -57,6 +57,7 @@ final class Sidrena_Cjenik {
         add_action('admin_menu', [__CLASS__, 'admin_menu']);
         add_action('admin_init', fn() => register_setting('sc_group', self::OPT, ['sanitize_callback' => [__CLASS__, 'sanitize_settings']]));
         add_action('admin_post_sc_generiraj', [__CLASS__, 'manual_generate']);
+        add_action('admin_post_sc_reset', [__CLASS__, 'manual_reset']);
         add_action('rest_api_init', [__CLASS__, 'rest']);
         add_action('graphql_register_types', [__CLASS__, 'graphql']);
         add_action(self::CRON, [__CLASS__, 'cron']);
@@ -427,7 +428,10 @@ final class Sidrena_Cjenik {
         $field = fn($k, $l, $h = '') => printf('<tr><th>%s</th><td><input class="regular-text" name="%s[%s]" value="%s"><p class="description">%s</p></td></tr>',
             esc_html($l), self::OPT, $k, esc_attr($s[$k]), esc_html($h));
         echo '<div class="wrap"><h1>Cjenik: postavke i datoteke</h1>';
-        if (isset($_GET['sc_ok'])) echo '<div class="notice notice-success"><p>Cjenik je generiran.</p></div>';
+        if (isset($_GET['sc_ok'])) {
+            $msg = $_GET['sc_ok'] === 'reset' ? 'Svi stari cjenici su obrisani i generiran je novi.' : 'Cjenik je generiran.';
+            echo '<div class="notice notice-success"><p>' . esc_html($msg) . '</p></div>';
+        }
         echo '<form method="post" action="options.php">';
         settings_fields('sc_group');
         echo '<table class="form-table">';
@@ -453,13 +457,31 @@ final class Sidrena_Cjenik {
         foreach ($f['arhiva'] as $e) {
             printf('<li>%s &nbsp; <a href="%s">CSV</a> | <a href="%s">XML</a></li>', esc_html($e['naziv']), esc_url($e['csv']), esc_url($e['xml']));
         }
-        echo '</ul></div>';
+        echo '</ul><hr><h2>Kreni ispočetka</h2><p>Briše sve generirane cjenike i arhivu, vraća broj pohrane na 1 i generira novi cjenik. Koristite samo prije objave, npr. za brisanje testnih cjenika.</p>';
+        printf('<form method="post" action="%s"><input type="hidden" name="action" value="sc_reset">%s', esc_url(admin_url('admin-post.php')), wp_nonce_field('sc_reset', '_wpnonce', true, false));
+        submit_button('Obriši sve cjenike i kreni ispočetka', 'delete', 'submit', true, ['onclick' => "return confirm('Obrisati sve cjenike i arhivu? Ovo se ne može poništiti.')"]);
+        echo '</form></div>';
     }
 
     public static function manual_generate() {
         if (!current_user_can('manage_options') || !check_admin_referer('sc_gen')) wp_die('Nedozvoljeno');
         self::regenerate(self::TIPOVI, true);
         wp_safe_redirect(admin_url('edit.php?post_type=' . self::CPT . '&page=sc-postavke&sc_ok=1'));
+        exit;
+    }
+
+    public static function manual_reset() {
+        if (!current_user_can('manage_options') || !check_admin_referer('sc_reset')) wp_die('Nedozvoljeno');
+        foreach (['csv', 'xml'] as $ext) {
+            foreach (glob(self::dir() . "/*.$ext") ?: [] as $file) unlink($file);
+        }
+        delete_option(self::REG);
+        foreach (self::TIPOVI as $type) {
+            delete_option("sc_broj_$type");
+            delete_option("sc_hash_$type");
+        }
+        self::regenerate(self::TIPOVI, true);
+        wp_safe_redirect(admin_url('edit.php?post_type=' . self::CPT . '&page=sc-postavke&sc_ok=reset'));
         exit;
     }
 
