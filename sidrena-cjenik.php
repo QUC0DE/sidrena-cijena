@@ -1,13 +1,13 @@
 <?php
 /**
- * Plugin Name: Sidrena cijena i cjenik (headless)
+ * Plugin Name: Sidrena cijena i cjenik
  * Description: Unos usluga i proizvoda s dodatnom (sidrenom) cijenom, automatsko generiranje CSV/XML cjenika prema NN 101/2026 i REST + WPGraphQL API za headless frontend.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * License: GPL-2.0-or-later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * Update URI: false
+ * Update URI: https://github.com/QUC0DE/sidrena-cijena
  * Text Domain: sidrena-cjenik
  */
 
@@ -23,6 +23,8 @@ final class Sidrena_Cjenik {
     const DEFAULT_DATUM = '2026-09-10';
     const CSV_SEP      = ',';
     const ARHIVA_DANA  = 45;
+    const REPO         = 'QUC0DE/sidrena-cijena';
+    const RELEASE_ZIP  = 'sidrena-cjenik.zip';
 
     const TIPOVI = ['usluga', 'proizvod'];
 
@@ -60,6 +62,9 @@ final class Sidrena_Cjenik {
         add_action(self::CRON, [__CLASS__, 'cron']);
         add_filter('manage_' . self::CPT . '_posts_columns', [__CLASS__, 'columns']);
         add_action('manage_' . self::CPT . '_posts_custom_column', [__CLASS__, 'column'], 10, 2);
+        add_filter('update_plugins_github.com', [__CLASS__, 'check_update'], 10, 3);
+        add_filter('upgrader_pre_download', [__CLASS__, 'download_private'], 10, 2);
+        add_filter('upgrader_source_selection', [__CLASS__, 'keep_folder_name'], 10, 4);
         register_deactivation_hook(__FILE__, fn() => wp_clear_scheduled_hook(self::CRON));
     }
 
@@ -474,6 +479,58 @@ final class Sidrena_Cjenik {
             echo $sid === '' ? '<span style="color:#d63638">nedostaje</span>'
                 : esc_html(self::eur($sid) . ' (' . self::fmt_date($m('sidrena_datum')) . ')');
         }
+    }
+
+    public static function check_update($update, $plugin_data, $plugin_file) {
+        if ($plugin_file !== plugin_basename(__FILE__)) return $update;
+        return self::latest_release() ?: $update;
+    }
+
+    private static function latest_release() {
+        $cached = get_transient('sc_release');
+        if ($cached !== false && empty($_GET['force-check'])) return $cached;
+        $res = wp_remote_get('https://api.github.com/repos/' . self::REPO . '/releases/latest', [
+            'headers' => self::github_headers('application/vnd.github+json'),
+        ]);
+        $body = json_decode(wp_remote_retrieve_body($res), true);
+        $release = [];
+        foreach ($body['assets'] ?? [] as $asset) {
+            if ($asset['name'] !== self::RELEASE_ZIP) continue;
+            $release = [
+                'slug'    => dirname(plugin_basename(__FILE__)),
+                'version' => ltrim($body['tag_name'], 'v'),
+                'url'     => $body['html_url'],
+                'package' => self::github_token() ? $asset['url'] : $asset['browser_download_url'],
+            ];
+        }
+        set_transient('sc_release', $release, 6 * HOUR_IN_SECONDS);
+        return $release;
+    }
+
+    // The asset API redirects to a signed URL on another host, which must not receive the token.
+    public static function download_private($reply, $package) {
+        $prefix = 'https://api.github.com/repos/' . self::REPO . '/releases/assets/';
+        if (!self::github_token() || strpos($package, $prefix) !== 0) return $reply;
+        $res = wp_remote_get($package, ['redirection' => 0, 'headers' => self::github_headers('application/octet-stream')]);
+        $location = wp_remote_retrieve_header($res, 'location');
+        return $location ? download_url($location) : new WP_Error('sc_download', 'Preuzimanje nove verzije nije uspjelo.');
+    }
+
+    public static function keep_folder_name($source, $remote_source, $upgrader, $hook_extra) {
+        $dir = dirname(plugin_basename(__FILE__));
+        if (($hook_extra['plugin'] ?? '') !== plugin_basename(__FILE__) || $dir === '.' || basename($source) === $dir) return $source;
+        $target = trailingslashit($remote_source) . $dir;
+        return $GLOBALS['wp_filesystem']->move($source, $target) ? trailingslashit($target) : $source;
+    }
+
+    private static function github_headers($accept) {
+        $headers = ['Accept' => $accept];
+        if (self::github_token()) $headers['Authorization'] = 'Bearer ' . self::github_token();
+        return $headers;
+    }
+
+    private static function github_token() {
+        return defined('SC_GITHUB_TOKEN') ? SC_GITHUB_TOKEN : '';
     }
 
     private static function dir() {

@@ -1,4 +1,4 @@
-# Sidrena cijena i cjenik (headless WordPress)
+# Sidrena cijena i cjenik
 
 WordPress plugin za obveze iz **NN 101/2026** (na snazi od 1. 10. 2026.):
 
@@ -46,6 +46,22 @@ Primjeri su u [`examples/`](examples/):
 - [`examples/nextjs/app/api/revalidate/route.js`](examples/nextjs/app/api/revalidate/route.js) je ruta koju plugin poziva nakon promjene. U postavkama plugina upišite npr. `https://example.hr/api/revalidate?secret=TAJNA`, s istom vrijednošću kao `REVALIDATE_SECRET` na frontendu.
 
 Datoteke leže u `wp-content/uploads/cjenik/` na WP backendu. Učinite ih dostupnima s javne domene (rewrite/proxy) i linkajte u footeru.
+
+## Ažuriranja
+
+Plugin provjerava zadnji [GitHub Release](../../releases) i nudi update u **Plugins** kao i svaki drugi plugin.
+
+Repo je privatan, pa u `wp-config.php` na stranici klijenta treba dodati token (fine-grained, samo ovaj repo, *Contents: Read-only*):
+
+```php
+define('SC_GITHUB_TOKEN', 'github_pat_...');
+```
+
+Nova verzija: podigni `Version` u `sidrena-cjenik.php` i `Stable tag` u `readme.txt`, dopuni `CHANGELOG.md`, commitaj i pushaj tag:
+
+```
+git tag v1.0.2 && git push origin v1.0.2
+```
 
 ## Hookovi
 
