@@ -1,0 +1,21 @@
+query Cjenik {
+  cjenik {
+    kategorije {
+      naziv
+      slug
+      stavke {
+        databaseId
+        naziv
+        vrsta
+        cijena
+        sidrenaCijena
+        sidrenaDatum
+        akcija { cijena naziv najniza30Dana }
+        jedinicaMjere
+        dostupnost
+      }
+    }
+    datoteke { vrsta naziv csv xml objavljeno }
+    arhiva { vrsta naziv csv xml objavljeno }
+  }
+}

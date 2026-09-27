@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: PHP lint
+        run: php -l sidrena-cjenik.php
+
+      - name: Check version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(grep -oP '^\s*\*\s*Version:\s*\K\S+' sidrena-cjenik.php)
+          [ "$TAG" = "$VER" ] || { echo "Tag $TAG does not match plugin Version $VER"; exit 1; }
+
+      - name: Build zip
+        run: git archive --format=zip --prefix=sidrena-cjenik/ -o sidrena-cjenik.zip HEAD
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: sidrena-cjenik.zip
+          generate_release_notes: true
