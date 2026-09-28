@@ -1,10 +1,13 @@
 const QUERY = `query { cjenik {
-  kategorije { naziv slug stavke { databaseId naziv cijena sidrenaCijena sidrenaDatum akcija { cijena naziv najniza30Dana } } }
-  datoteke { naziv csv xml }
+  kategorije { naziv slug stavke { databaseId naziv cijena sidrenaCijena sidrenaDatum jedinicaMjere akcija { cijena naziv najniza30Dana } } }
+  datoteke { vrsta naziv csv xml }
+  arhiva { vrsta naziv csv xml objavljeno }
 } }`;
 
-const eur = (n) => n?.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR' });
-const dan = (d) => new Date(d).toLocaleDateString('hr-HR');
+const NASLOVI = { usluga: 'Cjenik usluga', proizvod: 'Cjenik proizvoda' };
+
+const eur = (n) => (n == null ? '–' : n.toLocaleString('hr-HR', { style: 'currency', currency: 'EUR' }));
+const dan = (d) => new Date(`${d}T12:00:00`).toLocaleDateString('hr-HR');
 
 export default async function Cjenik() {
   const res = await fetch(`${process.env.WP_URL}/graphql`, {
@@ -22,26 +25,38 @@ export default async function Cjenik() {
           <h2>{k.naziv}</h2>
           {k.stavke.map((s) => (
             <div key={s.databaseId}>
-              <span>{s.naziv}</span>
+              <span>{s.naziv}{s.jedinicaMjere ? ` (${s.jedinicaMjere})` : ''}</span>
               {s.akcija ? (
                 <>
-                  <strong>{eur(s.akcija.cijena)}</strong> ({s.akcija.naziv})
+                  <strong>{eur(s.akcija.cijena)}</strong> {s.akcija.naziv && `(${s.akcija.naziv})`}
                   <small>Najniža cijena u zadnjih 30 dana: {eur(s.akcija.najniza30Dana)}</small>
                 </>
               ) : (
                 <strong>{eur(s.cijena)}</strong>
               )}
+              {/* The ministry recommends labelling the anchor price with its date only. */}
               <small>Cijena na {dan(s.sidrenaDatum)}: {eur(s.sidrenaCijena)}</small>
             </div>
           ))}
         </div>
       ))}
-      <p>
-        Strojno čitljivi cjenik:{' '}
+      <div>
         {cjenik.datoteke.map((d) => (
-          <span key={d.naziv}><a href={d.csv}>CSV</a> / <a href={d.xml}>XML</a> </span>
+          <div key={d.naziv}>
+            {NASLOVI[d.vrsta]} (strojno čitljivo): <a href={d.csv}>CSV</a> / <a href={d.xml}>XML</a>
+          </div>
         ))}
-      </p>
+        {cjenik.arhiva.length > 0 && (
+          <details>
+            <summary>Arhiva cjenika</summary>
+            {cjenik.arhiva.map((d) => (
+              <div key={d.naziv}>
+                {NASLOVI[d.vrsta]}, {new Date(d.objavljeno).toLocaleString('hr-HR')}: <a href={d.csv}>CSV</a> / <a href={d.xml}>XML</a>
+              </div>
+            ))}
+          </details>
+        )}
+      </div>
     </section>
   );
 }

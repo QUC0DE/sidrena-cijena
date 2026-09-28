@@ -12,9 +12,11 @@ Namijenjen je stranicama **bez WooCommercea** (usluge, digitalni materijali) i *
 
 ## Značajke
 
-- Izbornik **Cjenik** u adminu: usluge i proizvodi, sidrena cijena i datum, akcija (naziv, najniža cijena u 30 dana), kategorije
-- Kvačica "Nova stavka" za stavke uvedene nakon 10. 9. 2026. (sidrena cijena i datum postave se sami)
-- Automatsko generiranje CSV/XML kod svake promjene, a za proizvode i svaki radni dan u 6:30
+- Izbornik **Cjenik** u adminu: usluge i proizvodi, sidrena cijena i datum, akcija (naziv, najniža cijena u 30 dana), kategorije, filtri po vrsti
+- Izbor "Kada je stavka uvedena u ponudu?": za nove stavke sidrena cijena i datum postave se sami
+- Zakazana promjena cijene (primjenjuje se i objavljuje u 6:30 na dan kad vrijedi)
+- Upozorenja za obvezne podatke i pregled uživo kako cijena izgleda na stranici
+- Automatsko generiranje CSV/XML kod svake promjene, a za proizvode i svaki dan u 6:30
 - Nazivi datoteka po propisu: `oblik_adresa_oznaka_brojpohrane_dd.mm.gggg_hh:mm`
 - Arhiva prethodnih cjenika (45 dana)
 - Gumb za brisanje svih cjenika i ponovni početak numeracije (npr. nakon testiranja)
@@ -22,12 +24,26 @@ Namijenjen je stranicama **bez WooCommercea** (usluge, digitalni materijali) i *
 - WPGraphQL: root polje `cjenik`
 - Webhook za revalidaciju frontenda i action hook `sc_cjenik_azuriran`
 
+## Što propis traži
+
+Izvor: [Odluka o objavi cjenika, NN 101/2026](https://narodne-novine.nn.hr/clanci/sluzbeni/2026_09_101_1213.html) i pojašnjenja Ministarstva gospodarstva.
+
+| | Cjenik proizvoda | Cjenik usluga |
+|---|---|---|
+| Kada | jednom dnevno, do 8:00 | kod svake promjene, do 8:00 na dan kad promjena vrijedi |
+| Stupci | naziv, šifra, marka, jedinica mjere, cijena za JM, maloprodajna cijena, posebni oblik prodaje i njegov naziv, sidrena cijena, barkod, dostupnost | naziv, maloprodajna cijena, posebni oblik prodaje i njegov naziv, sidrena cijena |
+| Naziv datoteke | `oblik_adresa_oznaka_brojpohrane_dd.mm.gggg_hh:mm` | isto |
+
+- Proizvodi i usluge imaju **odvojene datoteke**, a svaka lokacija i webshop svoju datoteku.
+- Arhiva: najmanje 30 dana od objave.
+- Na stranici se sidrena cijena ističe **uz** redovnu cijenu, na istom cjeniku, ne na posebnom. Dovoljno je napisati "Cijena na 10. 9. 2026.: X €".
+
 ## Instalacija
 
 1. Preuzmite zip iz [Releases](../../releases) ili klonirajte repo u `wp-content/plugins/sidrena-cjenik`.
 2. Aktivirajte plugin.
 3. **Settings → General:** vremenska zona Zagreb.
-4. **Cjenik → Postavke i datoteke:** adresa, oblik i oznaka objekta.
+4. **Cjenik → Objava i postavke:** adresa, oblik i oznaka objekta.
 5. Serverski cron umjesto WP-Crona:
    ```php
    // wp-config.php
