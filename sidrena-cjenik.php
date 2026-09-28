@@ -1210,7 +1210,11 @@ HTML;
             $overrides = self::overrides($id);
             if (!$list) { echo '<span style="color:#d63638">nema lokacije</span>'; return; }
             if (!$offered) { echo '<span style="color:#d63638">nigdje</span>'; return; }
-            echo count($offered) === count($list) ? 'Sve' : esc_html(implode(', ', array_map([__CLASS__, 'objekt_label'], $offered)));
+            echo esc_html(implode(', ', array_map([__CLASS__, 'objekt_label'], $offered)));
+            if (count($offered) < count($list)) {
+                $missing = array_udiff($list, $offered, fn($a, $b) => strcmp($a['id'], $b['id']));
+                printf('<br><small>Ne nudi se: %s</small>', esc_html(implode(', ', array_map([__CLASS__, 'objekt_label'], $missing))));
+            }
             $custom = array_filter($offered, fn($o) => !empty($overrides[$o['id']]));
             if ($custom) printf('<br><small>Vlastite postavke: %s</small>', esc_html(implode(', ', array_map([__CLASS__, 'objekt_label'], $custom))));
         }
