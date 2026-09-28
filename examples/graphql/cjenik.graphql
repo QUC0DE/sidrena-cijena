@@ -13,9 +13,17 @@ query Cjenik {
         akcija { cijena naziv najniza30Dana }
         jedinicaMjere
         dostupnost
+        lokacije {
+          objekt
+          cijena
+          sidrenaCijena
+          akcija { cijena naziv najniza30Dana }
+          dostupnost
+        }
       }
     }
-    datoteke { vrsta naziv csv xml objavljeno }
-    arhiva { vrsta naziv csv xml objavljeno }
+    objekti { id vrsta naziv oblik adresa oznaka }
+    datoteke { objekt vrsta lokacija adresa oznaka naziv csv xml objavljeno }
+    arhiva { objekt vrsta lokacija adresa oznaka naziv csv xml objavljeno }
   }
 }

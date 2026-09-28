@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0] - 2026-09-28
+### Dodano
+- Više lokacija (uslužnih i prodajnih objekata). Svaka ima svoj cjenik, broj pohrane i arhivu.
+- U stavci: na kojim se lokacijama nudi, te vlastita cijena, dodatna cijena, akcija i raspoloživost po lokaciji.
+- Stupac "Lokacije" u popisu stavki kad postoji više lokacija.
+- REST `/wp-json/cjenik/v1/objekti`, GraphQL `cjenik.objekti`, `stavke.lokacije` i podaci o lokaciji na datotekama.
+- Filteri `sc_objekti` i `sc_cjenik_redak`. `sc_cjenik_azuriran` dobiva i ID-jeve lokacija.
+- Provjere: lokacija bez adrese, dvije lokacije s istim nazivom datoteke, stavke bez lokacije.
+### Promijenjeno
+- Postavke lokacije (oblik, adresa, oznaka) prebačene su u popis lokacija. Postojeće instalacije migriraju se same, a brojevi pohrane i arhiva se nastavljaju.
+- Kad s lokacije nestanu sve stavke, objavljuje se prazan cjenik umjesto da ostane stari.
+### Ispravljeno
+- Dnevna objava se nakon zakašnjelog WP-Crona vraća na 6:30 umjesto da se pomiče.
+
 ## [1.1.0] - 2026-09-28
 ### Dodano
 - Zakazana promjena cijene: nova cijena i datum od kojeg vrijedi, primjenjuje se i objavljuje u 6:30 tog dana.

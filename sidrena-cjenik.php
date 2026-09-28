@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Sidrena cijena i cjenik
- * Description: Unos usluga i proizvoda s dodatnom (sidrenom) cijenom, automatsko generiranje CSV/XML cjenika prema NN 101/2026 i REST + WPGraphQL API za headless frontend.
- * Version: 1.1.0
+ * Description: Unos usluga i proizvoda s dodatnom (sidrenom) cijenom, automatsko generiranje CSV/XML cjenika po lokacijama prema NN 101/2026 i REST + WPGraphQL API za headless frontend.
+ * Version: 1.2.0
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * License: GPL-2.0-or-later
@@ -25,8 +25,13 @@ final class Sidrena_Cjenik {
     const ARHIVA_DANA  = 45;
     const REPO         = 'QUC0DE/sidrena-cijena';
     const RELEASE_ZIP  = 'sidrena-cjenik.zip';
+    const DB_VERZIJA   = 2;
 
     const TIPOVI = ['usluga', 'proizvod'];
+
+    // Per-item meta holding the location ids the item is NOT offered at, and per-location overrides.
+    const META_ISKLJUCENO = 'sc_iskljuceni_objekti';
+    const META_LOKACIJE   = 'sc_lokacije';
 
     private static $fields = [
         'vrsta'            => 'usluga',
@@ -47,6 +52,8 @@ final class Sidrena_Cjenik {
     ];
     private static $price_fields = ['cijena', 'sidrena_cijena', 'akcija_cijena', 'akcija_najniza30', 'cijena_jm', 'nova_cijena'];
     private static $akcija_fields = ['akcija_cijena', 'akcija_naziv', 'akcija_najniza30'];
+    private static $objekt_fields = ['naziv', 'oblik', 'adresa', 'oznaka'];
+    private static $is_migrating = false;
 
     public static function init() {
         add_action('init', [__CLASS__, 'register']);
@@ -59,6 +66,8 @@ final class Sidrena_Cjenik {
         add_action('deleted_post', [__CLASS__, 'on_delete']);
         add_action('admin_menu', [__CLASS__, 'admin_menu']);
         add_action('admin_init', fn() => register_setting('sc_group', self::OPT, ['sanitize_callback' => [__CLASS__, 'sanitize_settings']]));
+        add_action('add_option_' . self::OPT, [__CLASS__, 'on_settings_change']);
+        add_action('update_option_' . self::OPT, [__CLASS__, 'on_settings_change']);
         add_action('admin_post_sc_generiraj', [__CLASS__, 'manual_generate']);
         add_action('admin_post_sc_reset', [__CLASS__, 'manual_reset']);
         add_action('rest_api_init', [__CLASS__, 'rest']);
@@ -95,12 +104,103 @@ final class Sidrena_Cjenik {
                 'auth_callback' => fn() => current_user_can('edit_posts'),
             ]);
         }
-        if (!wp_next_scheduled(self::CRON)) {
-            $next = new DateTime('today 06:30', wp_timezone());
-            if ($next->getTimestamp() <= time()) $next->modify('+1 day');
-            wp_schedule_event($next->getTimestamp(), 'daily', self::CRON);
-        }
+        self::schedule_cron();
+        self::maybe_migrate();
     }
+
+    // WP-Cron reschedules from the moment a late run happened, so pin the daily run back to 06:30.
+    private static function schedule_cron() {
+        $next = new DateTime('today 06:30', wp_timezone());
+        if ($next->getTimestamp() <= time()) $next->modify('+1 day');
+        $scheduled = wp_next_scheduled(self::CRON);
+        if ($scheduled && wp_date('H:i', $scheduled) === '06:30') return;
+        wp_clear_scheduled_hook(self::CRON);
+        wp_schedule_event($next->getTimestamp(), 'daily', self::CRON);
+    }
+
+    // v1 kept one hardcoded location per type in flat settings keys; v2 keeps a list of locations.
+    private static function maybe_migrate() {
+        if ((int) get_option('sc_db_verzija', 1) >= self::DB_VERZIJA) return;
+        $opt = get_option(self::OPT, false);
+        $reg = get_option(self::REG, []);
+        if (is_array($opt) && !isset($opt['objekti'])) {
+            $opt['objekti'] = [];
+            foreach (self::TIPOVI as $type) {
+                $has_history = (bool) array_filter($reg, fn($e) => ($e['vrsta'] ?? '') === $type);
+                if (!$has_history && !self::items($type)) continue;
+                $id = "$type-1";
+                $opt['objekti'][] = [
+                    'id' => $id, 'vrsta' => $type, 'naziv' => '',
+                    'oblik' => $opt["{$type}_oblik"] ?? ($type === 'proizvod' ? 'webshop' : 'centar'),
+                    'adresa' => $opt['adresa'] ?? '',
+                    'oznaka' => $opt["{$type}_oznaka"] ?? ($type === 'proizvod' ? 'W-01' : 'U-01'),
+                ];
+                $broj = get_option("sc_broj_$type", false);
+                if ($broj !== false) update_option("sc_broj_$id", $broj, false);
+                delete_option("sc_broj_$type");
+                delete_option("sc_hash_$type");
+                foreach ($reg as &$e) {
+                    if (($e['vrsta'] ?? '') === $type && empty($e['objekt'])) $e['objekt'] = $id;
+                }
+                unset($e);
+            }
+            foreach (['adresa', 'usluga_oblik', 'usluga_oznaka', 'proizvod_oblik', 'proizvod_oznaka'] as $k) unset($opt[$k]);
+            self::$is_migrating = true;
+            update_option(self::OPT, $opt);
+            update_option(self::REG, $reg, false);
+            self::$is_migrating = false;
+        }
+        update_option('sc_db_verzija', self::DB_VERZIJA);
+    }
+
+    /* ---------- Locations ---------- */
+
+    public static function objekti($type = null) {
+        $list = apply_filters('sc_objekti', self::settings()['objekti']);
+        return array_values(array_filter((array) $list, fn($o) => is_array($o) && !empty($o['id']) && (!$type || ($o['vrsta'] ?? '') === $type)));
+    }
+
+    private static function objekt($id) {
+        foreach (self::objekti() as $o) if ($o['id'] === $id) return $o;
+        return null;
+    }
+
+    private static function objekt_label(array $o) {
+        return ($o['naziv'] ?? '') ?: (($o['adresa'] ?? '') ?: ($o['oznaka'] ?? $o['id']));
+    }
+
+    private static function excluded($post_id) {
+        $v = get_post_meta($post_id, self::META_ISKLJUCENO, true);
+        return is_array($v) ? $v : [];
+    }
+
+    private static function overrides($post_id) {
+        $v = get_post_meta($post_id, self::META_LOKACIJE, true);
+        return is_array($v) ? $v : [];
+    }
+
+    private static function is_offered_at($post_id, $objekt_id) {
+        return !in_array($objekt_id, self::excluded($post_id), true);
+    }
+
+    // Base item values with the location's own price/sale/availability applied on top.
+    private static function effective($post, $objekt_id) {
+        $v = [];
+        foreach (array_keys(self::$fields) as $k) $v[$k] = (string) get_post_meta($post->ID, 'sc_' . $k, true);
+        $o = self::overrides($post->ID)[$objekt_id] ?? [];
+        foreach (['cijena', 'sidrena_cijena', 'dostupnost'] as $k) {
+            if (($o[$k] ?? '') !== '') $v[$k] = $o[$k];
+        }
+        if (($o['akcija'] ?? '') === 'ne') {
+            foreach (self::$akcija_fields as $k) $v[$k] = '';
+        } elseif (($o['akcija'] ?? '') === 'da') {
+            foreach (self::$akcija_fields as $k) $v[$k] = (string) ($o[$k] ?? '');
+        }
+        if ($v['sidrena_cijena'] === '') $v['sidrena_cijena'] = $v['cijena'];
+        return $v;
+    }
+
+    /* ---------- Item edit screen ---------- */
 
     public static function meta_box() {
         add_meta_box('sc_cijene', 'Cijene', [__CLASS__, 'render_box'], self::CPT, 'normal', 'high');
@@ -132,8 +232,8 @@ final class Sidrena_Cjenik {
 
         echo '<fieldset class="sc-section"><legend>Vrsta stavke</legend><div class="sc-choices">';
         foreach ([
-            'usluga'   => ['Usluga', 'Ide u <strong>cjenik usluga</strong>. Novi cjenik se objavljuje kod svake promjene cijene.'],
-            'proizvod' => ['Proizvod', 'Npr. digitalni materijal koji se prodaje online. Ide u <strong>cjenik proizvoda</strong> (webshop), koji se objavljuje svaki dan do 8:00.'],
+            'usluga'   => ['Usluga', 'Ide u <strong>cjenik usluga</strong> svake uslužne lokacije. Novi cjenik se objavljuje kod svake promjene cijene.'],
+            'proizvod' => ['Proizvod', 'Fizička ili digitalna roba. Ide u <strong>cjenik proizvoda</strong> svake prodajne lokacije (npr. trgovine ili webshopa), koji se objavljuje svaki dan do 8:00.'],
         ] as $k => [$l, $d]) {
             printf('<label class="sc-choice"><input type="radio" name="sc_vrsta" value="%s"%s><span><strong>%s</strong><small>%s</small></span></label>',
                 esc_attr($k), checked($vrsta, $k, false), esc_html($l), wp_kses_post($d));
@@ -163,17 +263,19 @@ final class Sidrena_Cjenik {
         echo '</div></fieldset>';
 
         echo '<fieldset class="sc-section"><legend>Zakazana promjena cijene</legend>';
-        echo '<p class="description">Neobavezno. Na odabrani dan u 6:30 nova cijena postaje redovna i objavljuje se novi cjenik. Propis traži da cjenik s novom cijenom bude objavljen najkasnije do 8:00 na dan kad promjena stupa na snagu.</p><div class="sc-row">';
+        echo '<p class="description">Neobavezno. Na odabrani dan u 6:30 nova cijena postaje redovna i objavljuje se novi cjenik. Propis traži da cjenik s novom cijenom bude objavljen najkasnije do 8:00 na dan kad promjena stupa na snagu. Lokacije s vlastitom cijenom zadržavaju svoju cijenu.</p><div class="sc-row">';
         $price('nova_cijena', 'Nova cijena (€)');
         $field('nova_cijena_od', 'Vrijedi od', '', 'min="' . esc_attr(wp_date('Y-m-d')) . '"', 'date');
         echo '</div></fieldset>';
 
+        self::render_locations($post);
+
         echo '<fieldset class="sc-section sc-only-proizvod"><legend>Podaci za cjenik proizvoda</legend><div class="sc-row">';
         $field('sifra', 'Šifra', 'Ako je prazno, koristi se SC-' . (int) $post->ID . '.');
-        $field('marka', 'Marka <span class="sc-req">*</span>', 'Npr. naziv centra za vlastiti materijal.');
+        $field('marka', 'Marka <span class="sc-req">*</span>', 'Npr. proizvođač ili vlastita marka.');
         $field('barkod', 'Barkod', 'Ako postoji.');
         echo '</div><div class="sc-row">';
-        $field('jedinica_mjere', 'Jedinica mjere', 'Ako je primjenjivo, npr. kom.');
+        $field('jedinica_mjere', 'Jedinica mjere', 'Ako je primjenjivo, npr. kom, kg, l.');
         $price('cijena_jm', 'Cijena za jedinicu mjere (€)', 'Ako je primjenjivo.');
         echo '<div class="sc-field"><label for="sc_dostupnost">Raspoloživost</label><select id="sc_dostupnost" name="sc_dostupnost">';
         foreach (['dostupno' => 'Dostupno', 'nedostupno' => 'Nedostupno'] as $k => $l) {
@@ -184,6 +286,63 @@ final class Sidrena_Cjenik {
         echo '<div class="sc-preview"><span class="sc-label">Ovako će cijena izgledati na stranici</span><div class="sc-preview-text"></div></div>';
         echo '</div>';
         echo self::box_js();
+    }
+
+    private static function render_locations($post) {
+        $overrides = self::overrides($post->ID);
+        $excluded  = self::excluded($post->ID);
+        $settings_url = admin_url('edit.php?post_type=' . self::CPT . '&page=sc-postavke');
+        echo '<fieldset class="sc-section"><legend>Lokacije</legend>';
+        foreach (self::TIPOVI as $type) {
+            $list = self::objekti($type);
+            $has_custom = (bool) array_filter($list, fn($o) => !empty($overrides[$o['id']]) || in_array($o['id'], $excluded, true));
+            printf('<div data-for="%s">', esc_attr($type));
+            if (!$list) {
+                printf('<div class="notice notice-warning inline"><p>Nema nijedne lokacije za %s, pa se ova stavka zasad nigdje ne objavljuje. <a href="%s">Dodajte lokaciju</a></p></div>',
+                    esc_html(mb_strtolower(self::type_info($type)['title'])), esc_url($settings_url));
+            } elseif (count($list) === 1 && !$has_custom) {
+                printf('<p class="description">Objavljuje se u cjeniku lokacije <strong>%s</strong>. Kad dodate više lokacija, ovdje možete odabrati gdje se stavka nudi.</p>', esc_html(self::objekt_label($list[0])));
+            } else {
+                echo '<p class="description">Označite gdje se stavka nudi. Cijena, akcija i raspoloživost iste su kao gore, osim ako za lokaciju upišete drukčije. Nove lokacije automatski su uključene.</p>';
+                foreach ($list as $o) {
+                    self::render_location($o, $overrides[$o['id']] ?? [], !in_array($o['id'], $excluded, true));
+                }
+            }
+            echo '</div>';
+        }
+        echo '</fieldset>';
+    }
+
+    private static function render_location(array $o, array $ov, $is_on) {
+        $id   = $o['id'];
+        $name = 'sc_obj[' . $id . ']';
+        $input = function ($k, $label, $is_price = true, $placeholder = '') use ($id, $name, $ov) {
+            printf('<div class="sc-field"><label for="sc_obj_%1$s_%2$s">%3$s</label><input type="text" id="sc_obj_%1$s_%2$s" name="%4$s[%2$s]" value="%5$s"%6$s></div>',
+                esc_attr($id), esc_attr($k), esc_html($label), esc_attr($name),
+                esc_attr($is_price ? self::price_input($ov[$k] ?? '') : ($ov[$k] ?? '')),
+                $is_price ? ' inputmode="decimal" data-inherit="' . esc_attr($placeholder) . '"' : '');
+        };
+        $select = function ($k, $label, array $options) use ($id, $name, $ov) {
+            printf('<div class="sc-field"><label for="sc_obj_%1$s_%2$s">%3$s</label><select id="sc_obj_%1$s_%2$s" name="%4$s[%2$s]" class="sc-location-%2$s">', esc_attr($id), esc_attr($k), esc_html($label), esc_attr($name));
+            foreach ($options as $val => $l) printf('<option value="%s"%s>%s</option>', esc_attr($val), selected($ov[$k] ?? '', $val, false), esc_html($l));
+            echo '</select></div>';
+        };
+        $details = array_filter([$o['oblik'] ?? '', $o['adresa'] ?? '', $o['oznaka'] ?? '']);
+
+        printf('<div class="sc-location%s" data-akcija="%s">', $is_on ? '' : ' is-off', esc_attr($ov['akcija'] ?? ''));
+        printf('<input type="hidden" name="%s[shown]" value="1">', esc_attr($name));
+        printf('<label class="sc-location-on"><input type="checkbox" name="%s[on]" value="1"%s> <strong>%s</strong> <span class="sc-muted">%s</span></label>',
+            esc_attr($name), checked($is_on, true, false), esc_html(self::objekt_label($o)), esc_html(implode(' · ', $details)));
+        printf('<details%s><summary>Drukčija cijena, akcija ili raspoloživost na ovoj lokaciji</summary><div class="sc-row">', $ov ? ' open' : '');
+        $input('cijena', 'Cijena (€)', true, 'cijena');
+        $input('sidrena_cijena', 'Dodatna cijena (€)', true, 'sidrena_cijena');
+        $select('akcija', 'Akcija', ['' => 'Kao osnovno', 'ne' => 'Bez akcije', 'da' => 'Vlastita akcija']);
+        if ($o['vrsta'] === 'proizvod') $select('dostupnost', 'Raspoloživost', ['' => 'Kao osnovno', 'dostupno' => 'Dostupno', 'nedostupno' => 'Nedostupno']);
+        echo '</div><div class="sc-row sc-location-own-akcija">';
+        $input('akcija_cijena', 'Akcijska cijena (€)');
+        $input('akcija_naziv', 'Naziv akcije', false);
+        $input('akcija_najniza30', 'Najniža cijena u 30 dana (€)');
+        echo '</div></details></div>';
     }
 
     private static function box_js() {
@@ -200,7 +359,8 @@ final class Sidrena_Cjenik {
         var n = parseFloat(s);
         return isNaN(n) ? null : n;
     };
-    var eur = function (n) { return n === null ? '–' : n.toLocaleString('hr-HR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' €'; };
+    var num = function (n) { return n.toLocaleString('hr-HR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
+    var eur = function (n) { return n === null ? '–' : num(n) + ' €'; };
     var day = function (ymd) { var p = (ymd || '').split('-'); return p.length === 3 ? (+p[2]) + '. ' + (+p[1]) + '. ' + p[0] + '.' : ''; };
     var today = function () { var d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
 
@@ -226,7 +386,17 @@ final class Sidrena_Cjenik {
         }
         parts.push('Cijena na ' + day(anchorDate) + ': ' + eur(anchor));
         box.querySelector('.sc-preview-text').innerHTML = parts.join('<br>');
-        byName('sc_sidrena_cijena').placeholder = regular === null ? '0,00' : eur(regular).replace(' €', '') + ' (ista kao redovna)';
+        byName('sc_sidrena_cijena').placeholder = regular === null ? '0,00' : num(regular) + ' (ista kao redovna)';
+
+        var inherited = { cijena: regular, sidrena_cijena: anchor };
+        box.querySelectorAll('[data-inherit]').forEach(function (input) {
+            var base = inherited[input.dataset.inherit];
+            input.placeholder = input.dataset.inherit && base !== null && base !== undefined ? 'kao osnovno: ' + num(base) : '0,00';
+        });
+        box.querySelectorAll('.sc-location').forEach(function (loc) {
+            loc.classList.toggle('is-off', !loc.querySelector('.sc-location-on input').checked);
+            loc.dataset.akcija = loc.querySelector('.sc-location-akcija').value;
+        });
     }
     box.addEventListener('input', update);
     box.addEventListener('change', update);
@@ -248,6 +418,7 @@ HTML;
 .sc-box .sc-field label, .sc-box .sc-label { font-weight: 600; }
 .sc-box .sc-field .description { margin: 0; }
 .sc-box .sc-req { color: #d63638; }
+.sc-box .sc-muted { color: var(--sc-muted); }
 .sc-box .sc-choices { display: flex; flex-wrap: wrap; gap: 12px; }
 .sc-box .sc-choice { display: flex; gap: 8px; align-items: flex-start; flex: 1 1 260px; max-width: 420px; padding: 12px; border: 1px solid var(--sc-border); border-radius: 4px; cursor: pointer; }
 .sc-box .sc-choice:has(input:checked) { border-color: #2271b1; box-shadow: 0 0 0 1px #2271b1; }
@@ -255,12 +426,20 @@ HTML;
 .sc-box .sc-choice small { color: var(--sc-muted); font-size: 12px; }
 .sc-box .sc-inline { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 8px; }
 .sc-box .sc-toggle { display: inline-block; margin-bottom: 12px; }
+.sc-box .sc-location { border: 1px solid var(--sc-border); border-radius: 4px; padding: 10px 12px; margin-bottom: 8px; max-width: 1000px; }
+.sc-box .sc-location summary { cursor: pointer; color: #2271b1; margin-top: 6px; }
+.sc-box .sc-location details[open] summary { margin-bottom: 12px; }
+.sc-box .sc-location.is-off details { display: none; }
+.sc-box .sc-location.is-off .sc-location-on strong { color: var(--sc-muted); text-decoration: line-through; }
+.sc-box .sc-location:not([data-akcija="da"]) .sc-location-own-akcija { display: none; }
 .sc-box .sc-preview { background: #f6f7f7; border-left: 4px solid #2271b1; padding: 12px 16px; margin-top: 8px; }
 .sc-box .sc-preview-text { margin-top: 6px; line-height: 1.7; }
 .sc-box:not([data-vrsta="proizvod"]) .sc-only-proizvod,
 .sc-box:not([data-uvedeno="nakon"]) .sc-only-nakon,
 .sc-box[data-uvedeno="nakon"] .sc-only-prije,
-.sc-box:not([data-akcija="1"]) .sc-only-akcija { display: none; }
+.sc-box:not([data-akcija="1"]) .sc-only-akcija,
+.sc-box[data-vrsta="usluga"] [data-for="proizvod"],
+.sc-box[data-vrsta="proizvod"] [data-for="usluga"] { display: none; }
 </style>
 HTML;
     }
@@ -296,7 +475,39 @@ HTML;
         }
 
         foreach ($in as $k => $val) update_post_meta($post_id, 'sc_' . $k, $val);
+        self::save_locations($post_id, (array) ($_POST['sc_obj'] ?? []));
         self::add_notices(array_merge($notices, self::validate($post_id)));
+    }
+
+    private static function save_locations($post_id, array $posted) {
+        $known     = array_column(self::objekti(), 'id');
+        $excluded  = array_values(array_intersect(self::excluded($post_id), $known));
+        $overrides = array_intersect_key(self::overrides($post_id), array_flip($known));
+
+        foreach ($known as $id) {
+            $row = $posted[$id] ?? null;
+            // Locations not rendered in the form (e.g. only one exists) keep their stored values.
+            if (!is_array($row) || empty($row['shown'])) continue;
+            $row = wp_unslash($row);
+
+            $excluded = array_values(array_diff($excluded, [$id]));
+            if (empty($row['on'])) $excluded[] = $id;
+
+            $ov = [];
+            foreach (['cijena', 'sidrena_cijena', 'akcija_cijena', 'akcija_najniza30'] as $k) $ov[$k] = self::norm_price(sanitize_text_field($row[$k] ?? ''));
+            $ov['akcija_naziv'] = sanitize_text_field($row['akcija_naziv'] ?? '');
+            $ov['akcija']       = in_array($row['akcija'] ?? '', ['ne', 'da'], true) ? $row['akcija'] : '';
+            $ov['dostupnost']   = in_array($row['dostupnost'] ?? '', ['dostupno', 'nedostupno'], true) ? $row['dostupnost'] : '';
+            if ($ov['akcija'] !== 'da') {
+                foreach (self::$akcija_fields as $k) $ov[$k] = '';
+            }
+            if ($ov['cijena'] !== '' && $ov['sidrena_cijena'] === '') $ov['sidrena_cijena'] = $ov['cijena'];
+            $ov = array_filter($ov, fn($val) => $val !== '');
+            if ($ov) $overrides[$id] = $ov;
+            else unset($overrides[$id]);
+        }
+        update_post_meta($post_id, self::META_ISKLJUCENO, $excluded);
+        update_post_meta($post_id, self::META_LOKACIJE, wp_slash($overrides));
     }
 
     private static function validate($post_id) {
@@ -309,6 +520,23 @@ HTML;
         if ($m('akcija_cijena') !== '' && $m('akcija_najniza30') === '') $out[] = ['warning', 'Upišite najnižu cijenu u zadnjih 30 dana. Mora biti istaknuta uz akcijsku cijenu.'];
         if ($m('vrsta') === 'proizvod' && $m('marka') === '') $out[] = ['warning', 'Marka je obvezan podatak u cjeniku proizvoda.'];
         if (($m('nova_cijena') === '') !== ($m('nova_cijena_od') === '')) $out[] = ['error', 'Za zakazanu promjenu upišite i novu cijenu i datum od kojeg vrijedi.'];
+
+        $locations = self::objekti($m('vrsta'));
+        $overrides = self::overrides($post_id);
+        foreach ($locations as $o) {
+            $ov = $overrides[$o['id']] ?? [];
+            $label = self::objekt_label($o);
+            if (($ov['akcija'] ?? '') === 'da' && (($ov['akcija_cijena'] ?? '') === '' || ($ov['akcija_naziv'] ?? '') === '')) {
+                $out[] = ['error', "Lokacija \"$label\": za vlastitu akciju upišite akcijsku cijenu i naziv akcije."];
+            }
+        }
+        if ($locations && !array_filter($locations, fn($o) => self::is_offered_at($post_id, $o['id']))) {
+            $out[] = ['warning', 'Stavka nije označena ni na jednoj lokaciji, pa se neće pojaviti ni u jednom cjeniku.'];
+        }
+        $custom = array_filter($locations, fn($o) => ($overrides[$o['id']]['cijena'] ?? '') !== '');
+        if ($m('nova_cijena') !== '' && $custom) {
+            $out[] = ['info', 'Zakazana promjena mijenja osnovnu cijenu. Lokacije s vlastitom cijenom (' . implode(', ', array_map([__CLASS__, 'objekt_label'], $custom)) . ') zadržavaju svoju.'];
+        }
         return $out;
     }
 
@@ -328,6 +556,8 @@ HTML;
         }
     }
 
+    /* ---------- Publishing ---------- */
+
     public static function on_change($post_id, $post) {
         if ((defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) || wp_is_post_revision($post_id)) return;
         if ($post->post_status === 'auto-draft') return;
@@ -338,11 +568,17 @@ HTML;
         if (get_post_type($post_id) === self::CPT) self::regenerate(self::TIPOVI);
     }
 
+    // Location name/address changes the file name, so publish right away.
+    public static function on_settings_change() {
+        if (!self::$is_migrating) self::regenerate(self::TIPOVI);
+    }
+
     // Runs every day: products must be republished daily, services whenever a scheduled change kicks in.
     public static function cron() {
         self::apply_scheduled();
         self::regenerate(self::TIPOVI, ['proizvod']);
         update_option('sc_zadnji_cron', time(), false);
+        self::schedule_cron();
     }
 
     private static function apply_scheduled() {
@@ -358,26 +594,35 @@ HTML;
         }
     }
 
-    /** @param bool|string[] $force true for all types, or the list of types to republish even when unchanged */
+    /**
+     * @param string[]      $types types whose locations are checked
+     * @param bool|string[] $force true for all, or types / location ids to republish even when unchanged
+     */
     public static function regenerate(array $types, $force = false) {
         $changed = [];
-        foreach ($types as $type) {
-            $rows = self::rows($type);
-            if (!$rows) continue;
-            $hash = md5(wp_json_encode($rows));
-            $is_forced = $force === true || in_array($type, (array) $force, true);
-            if (!$is_forced && get_option("sc_hash_$type") === $hash) continue;
-            self::write($type, $rows);
-            update_option("sc_hash_$type", $hash, false);
-            $changed[] = $type;
+        $subjekt = self::settings()['subjekt'];
+        foreach (self::objekti() as $o) {
+            if (!in_array($o['vrsta'], $types, true)) continue;
+            $rows = self::rows($o);
+            $has_history = get_option("sc_hash_{$o['id']}", false) !== false;
+            // Nothing to publish and nothing published before: this location has no price list yet.
+            if (!$rows && !$has_history) continue;
+            $hash = md5(wp_json_encode([$subjekt, $o, $rows]));
+            $is_forced = $force === true || array_intersect([$o['vrsta'], $o['id']], (array) $force);
+            if (!$is_forced && get_option("sc_hash_{$o['id']}") === $hash) continue;
+            self::write($o, $rows);
+            update_option("sc_hash_{$o['id']}", $hash, false);
+            $changed[] = $o;
         }
         if ($changed) {
             self::cleanup();
-            do_action('sc_cjenik_azuriran', $changed);
+            $changed_types = array_values(array_unique(array_column($changed, 'vrsta')));
+            $changed_ids   = array_column($changed, 'id');
+            do_action('sc_cjenik_azuriran', $changed_types, $changed_ids);
             $url = self::settings()['revalidate_url'];
-            if ($url) wp_remote_post($url, ['blocking' => false, 'timeout' => 3, 'body' => ['tipovi' => $changed]]);
+            if ($url) wp_remote_post($url, ['blocking' => false, 'timeout' => 3, 'body' => ['tipovi' => $changed_types, 'objekti' => $changed_ids]]);
         }
-        return $changed;
+        return array_column($changed, 'id');
     }
 
     private static function items($type = null) {
@@ -389,44 +634,53 @@ HTML;
         return get_posts($args);
     }
 
-    private static function rows($type) {
+    private static function csv_columns($type) {
+        return $type === 'proizvod'
+            ? ['naziv', 'sifra', 'marka', 'jedinica_mjere', 'cijena_za_jedinicu_mjere', 'maloprodajna_cijena', 'posebni_oblik_prodaje',
+               'naziv_posebnog_oblika_prodaje', 'sidrena_cijena', 'datum_sidrene_cijene', 'barkod', 'raspolozivost']
+            : ['naziv', 'maloprodajna_cijena', 'posebni_oblik_prodaje', 'naziv_posebnog_oblika_prodaje', 'sidrena_cijena', 'datum_sidrene_cijene'];
+    }
+
+    private static function rows(array $objekt) {
+        $type = $objekt['vrsta'];
         $rows = [];
         foreach (self::items($type) as $p) {
-            $m = fn($k) => (string) get_post_meta($p->ID, 'sc_' . $k, true);
-            $akcija = $m('akcija_cijena') !== '';
-            $row = ['naziv' => $p->post_title];
-            if ($type === 'proizvod') {
-                $row['sifra']                    = $m('sifra') ?: 'SC-' . $p->ID;
-                $row['marka']                    = $m('marka');
-                $row['jedinica_mjere']           = $m('jedinica_mjere');
-                $row['cijena_za_jedinicu_mjere'] = $m('cijena_jm');
-            }
-            $row['maloprodajna_cijena']           = $akcija ? $m('akcija_cijena') : $m('cijena');
-            $row['posebni_oblik_prodaje']         = $akcija ? 'DA' : 'NE';
-            $row['naziv_posebnog_oblika_prodaje'] = $akcija ? $m('akcija_naziv') : '';
-            $row['sidrena_cijena']                = $m('sidrena_cijena') ?: $m('cijena');
-            $row['datum_sidrene_cijene']          = self::fmt_date($m('sidrena_datum') ?: self::DEFAULT_DATUM);
-            if ($type === 'proizvod') {
-                $row['barkod']        = $m('barkod');
-                $row['raspolozivost'] = $m('dostupnost') ?: 'dostupno';
-            }
-            $rows[] = $row;
+            if (!self::is_offered_at($p->ID, $objekt['id'])) continue;
+            $v = self::effective($p, $objekt['id']);
+            $akcija = $v['akcija_cijena'] !== '';
+            $row = [
+                'naziv'                         => $p->post_title,
+                'sifra'                         => $v['sifra'] ?: 'SC-' . $p->ID,
+                'marka'                         => $v['marka'],
+                'jedinica_mjere'                => $v['jedinica_mjere'],
+                'cijena_za_jedinicu_mjere'      => $v['cijena_jm'],
+                'maloprodajna_cijena'           => $akcija ? $v['akcija_cijena'] : $v['cijena'],
+                'posebni_oblik_prodaje'         => $akcija ? 'DA' : 'NE',
+                'naziv_posebnog_oblika_prodaje' => $akcija ? $v['akcija_naziv'] : '',
+                'sidrena_cijena'                => $v['sidrena_cijena'],
+                'datum_sidrene_cijene'          => self::fmt_date($v['sidrena_datum'] ?: self::DEFAULT_DATUM),
+                'barkod'                        => $v['barkod'],
+                'raspolozivost'                 => $v['dostupnost'] ?: 'dostupno',
+            ];
+            $row = array_merge(array_flip(self::csv_columns($type)), array_intersect_key($row, array_flip(self::csv_columns($type))));
+            $rows[] = apply_filters('sc_cjenik_redak', $row, $p, $objekt);
         }
         return $rows;
     }
 
-    private static function write($type, array $rows) {
-        $s = self::settings();
-        $n = (int) get_option("sc_broj_$type", 0) + 1;
-        update_option("sc_broj_$type", $n, false);
+    private static function write(array $objekt, array $rows) {
+        $id = $objekt['id'];
+        $n = (int) get_option("sc_broj_$id", 0) + 1;
+        update_option("sc_broj_$id", $n, false);
 
-        $base = self::file_base($type, $n);
+        $base = self::file_base($objekt, $n);
         $dir = self::dir();
+        $header = $rows ? array_keys($rows[0]) : self::csv_columns($objekt['vrsta']);
 
         // UTF-8 BOM so Excel detects the encoding
         $fh = fopen("$dir/$base.csv", 'w');
         fwrite($fh, "\xEF\xBB\xBF");
-        fputcsv($fh, array_keys($rows[0]), self::CSV_SEP);
+        fputcsv($fh, $header, self::CSV_SEP);
         foreach ($rows as $r) fputcsv($fh, array_values($r), self::CSV_SEP);
         fclose($fh);
 
@@ -434,8 +688,8 @@ HTML;
         $doc->formatOutput = true;
         $root = $doc->createElement('cjenik');
         foreach ([
-            'subjekt' => $s['subjekt'], 'oblik_objekta' => $s["{$type}_oblik"], 'adresa' => $s['adresa'],
-            'oznaka_objekta' => $s["{$type}_oznaka"], 'broj_pohrane' => $n, 'vrijeme' => wp_date('c'),
+            'subjekt' => self::settings()['subjekt'], 'vrsta' => $objekt['vrsta'], 'oblik_objekta' => $objekt['oblik'],
+            'adresa' => $objekt['adresa'], 'oznaka_objekta' => $objekt['oznaka'], 'broj_pohrane' => $n, 'vrijeme' => wp_date('c'),
         ] as $a => $val) $root->setAttribute($a, (string) $val);
         foreach ($rows as $r) {
             $el = $doc->createElement('stavka');
@@ -450,22 +704,34 @@ HTML;
         $doc->save("$dir/$base.xml");
 
         $reg = get_option(self::REG, []);
-        $reg[] = ['vrsta' => $type, 'naziv' => $base, 'vrijeme' => time()];
+        $reg[] = [
+            'objekt' => $id, 'vrsta' => $objekt['vrsta'], 'naziv' => $base, 'vrijeme' => time(),
+            'lokacija' => self::objekt_label($objekt), 'adresa' => $objekt['adresa'], 'oznaka' => $objekt['oznaka'],
+        ];
         update_option(self::REG, $reg, false);
     }
 
-    private static function file_base($type, $n) {
-        $s = self::settings();
+    private static function file_base(array $objekt, $n) {
         return self::clean_name(implode('_', [
-            $s["{$type}_oblik"], $s['adresa'], $s["{$type}_oznaka"], $n, wp_date('d.m.Y_H:i'),
+            $objekt['oblik'], $objekt['adresa'], $objekt['oznaka'], $n, wp_date('d.m.Y_H:i'),
         ]));
+    }
+
+    // Latest file per existing location; files of removed locations become archive.
+    private static function current_names(array $reg) {
+        $known = array_column(self::objekti(), 'id');
+        $current = [];
+        foreach ($reg as $e) {
+            $id = $e['objekt'] ?? '';
+            if (in_array($id, $known, true)) $current[$id] = $e['naziv'];
+        }
+        return $current;
     }
 
     private static function cleanup() {
         $reg = get_option(self::REG, []);
         $limit = time() - self::ARHIVA_DANA * DAY_IN_SECONDS;
-        $current = [];
-        foreach ($reg as $e) $current[$e['vrsta']] = $e['naziv'];
+        $current = self::current_names($reg);
         $keep = [];
         foreach ($reg as $e) {
             if ($e['vrijeme'] < $limit && !in_array($e['naziv'], $current, true)) {
@@ -478,21 +744,29 @@ HTML;
     }
 
     public static function files() {
-        $reg = array_reverse(get_option(self::REG, []));
+        $reg = get_option(self::REG, []);
+        $current = self::current_names($reg);
         $url = self::url();
         $out = ['trenutni' => [], 'arhiva' => []];
-        foreach ($reg as $e) {
+        foreach (array_reverse($reg) as $e) {
             if (!file_exists(self::dir() . "/{$e['naziv']}.csv")) continue;
+            $id = $e['objekt'] ?? '';
+            $o = self::objekt($id);
             $item = [
-                'vrsta' => $e['vrsta'], 'naziv' => $e['naziv'], 'objavljeno' => wp_date('c', $e['vrijeme']),
+                'objekt' => $id, 'vrsta' => $e['vrsta'],
+                'lokacija' => $o ? self::objekt_label($o) : ($e['lokacija'] ?? ''),
+                'adresa' => $e['adresa'] ?? ($o['adresa'] ?? ''), 'oznaka' => $e['oznaka'] ?? ($o['oznaka'] ?? ''),
+                'naziv' => $e['naziv'], 'objavljeno' => wp_date('c', $e['vrijeme']),
                 'csv' => $url . '/' . rawurlencode($e['naziv'] . '.csv'),
                 'xml' => $url . '/' . rawurlencode($e['naziv'] . '.xml'),
             ];
-            if (!isset($out['trenutni'][$e['vrsta']])) $out['trenutni'][$e['vrsta']] = $item;
+            if (($current[$id] ?? null) === $e['naziv']) $out['trenutni'][$id] = $item;
             else $out['arhiva'][] = $item;
         }
         return $out;
     }
+
+    /* ---------- API ---------- */
 
     public static function rest() {
         register_rest_route('cjenik/v1', '/stavke', [
@@ -503,6 +777,23 @@ HTML;
             'methods' => 'GET', 'permission_callback' => '__return_true',
             'callback' => fn() => rest_ensure_response(self::files()),
         ]);
+        register_rest_route('cjenik/v1', '/objekti', [
+            'methods' => 'GET', 'permission_callback' => '__return_true',
+            'callback' => fn() => rest_ensure_response(self::objekti()),
+        ]);
+    }
+
+    private static function price_data(array $v) {
+        return [
+            'cijena'         => self::num($v['cijena']),
+            'sidrena_cijena' => self::num($v['sidrena_cijena'] ?: $v['cijena']),
+            'akcija'         => $v['akcija_cijena'] !== '' ? [
+                'cijena' => self::num($v['akcija_cijena']),
+                'naziv' => $v['akcija_naziv'],
+                'najniza_30_dana' => self::num($v['akcija_najniza30']),
+            ] : null,
+            'dostupnost'     => $v['vrsta'] === 'proizvod' ? ($v['dostupnost'] ?: 'dostupno') : null,
+        ];
     }
 
     public static function data() {
@@ -515,24 +806,28 @@ HTML;
             if (!isset($groups[$key])) {
                 $groups[$key] = ['kategorija' => $kat ? $kat->name : 'Ostalo', 'slug' => $key, 'stavke' => []];
             }
+            $base = [];
+            foreach (array_keys(self::$fields) as $k) $base[$k] = $m($k);
+            $base['vrsta'] = $base['vrsta'] ?: 'usluga';
+            $lokacije = [];
+            foreach (self::objekti($base['vrsta']) as $o) {
+                if (!self::is_offered_at($p->ID, $o['id'])) continue;
+                $lokacije[] = ['objekt' => $o['id']] + self::price_data(self::effective($p, $o['id']));
+            }
             $groups[$key]['stavke'][] = [
                 'id'             => $p->ID,
                 'naziv'          => $p->post_title,
-                'vrsta'          => $m('vrsta') ?: 'usluga',
-                'cijena'         => self::num($m('cijena')),
-                'sidrena_cijena' => self::num($m('sidrena_cijena') ?: $m('cijena')),
-                'sidrena_datum'  => $m('sidrena_datum') ?: self::DEFAULT_DATUM,
-                'akcija'         => $m('akcija_cijena') !== '' ? [
-                    'cijena' => self::num($m('akcija_cijena')),
-                    'naziv' => $m('akcija_naziv'),
-                    'najniza_30_dana' => self::num($m('akcija_najniza30')),
-                ] : null,
-                'jedinica_mjere' => $m('jedinica_mjere') ?: null,
-                'dostupnost'     => $m('vrsta') === 'proizvod' ? ($m('dostupnost') ?: 'dostupno') : null,
-            ];
+                'vrsta'          => $base['vrsta'],
+                'sidrena_datum'  => $base['sidrena_datum'] ?: self::DEFAULT_DATUM,
+                'jedinica_mjere' => $base['jedinica_mjere'] ?: null,
+                'lokacije'       => $lokacije,
+            ] + self::price_data($base);
         }
         $f = self::files();
-        return ['kategorije' => array_values($groups), 'datoteke' => array_values($f['trenutni']), 'arhiva' => $f['arhiva']];
+        return [
+            'kategorije' => array_values($groups), 'objekti' => self::objekti(),
+            'datoteke' => array_values($f['trenutni']), 'arhiva' => $f['arhiva'],
+        ];
     }
 
     public static function graphql() {
@@ -551,16 +846,34 @@ HTML;
             'najniza30Dana' => ['Float', 'najniza_30_dana', 'Najniža cijena u zadnjih 30 dana'],
         ])]);
 
+        register_graphql_object_type('CjenikObjekt', ['description' => 'Lokacija (prodajni ili uslužni objekt) s vlastitim cjenikom', 'fields' => $map([
+            'id'     => ['String', 'id', 'Stalni ID lokacije'],
+            'vrsta'  => ['String', 'vrsta', 'usluga | proizvod'],
+            'naziv'  => ['String', 'naziv', 'Naziv lokacije'],
+            'oblik'  => ['String', 'oblik', 'Oblik objekta, npr. kabinet ili webshop'],
+            'adresa' => ['String', 'adresa', 'Adresa objekta'],
+            'oznaka' => ['String', 'oznaka', 'Oznaka objekta, npr. U-01'],
+        ])]);
+
+        register_graphql_object_type('CjenikStavkaLokacija', ['description' => 'Cijena stavke na jednoj lokaciji', 'fields' => $map([
+            'objekt'        => ['String', 'objekt', 'ID lokacije'],
+            'cijena'        => ['Float', 'cijena', 'Redovna cijena na lokaciji'],
+            'sidrenaCijena' => ['Float', 'sidrena_cijena', 'Dodatna (sidrena) cijena na lokaciji'],
+            'akcija'        => ['CjenikAkcija', 'akcija', 'Akcija na lokaciji ili null'],
+            'dostupnost'    => ['String', 'dostupnost', 'dostupno | nedostupno (samo proizvodi)'],
+        ])]);
+
         register_graphql_object_type('CjenikStavka', ['description' => 'Stavka cjenika', 'fields' => $map([
             'databaseId'    => ['Int', 'id', 'ID stavke'],
             'naziv'         => ['String', 'naziv', 'Naziv usluge/proizvoda'],
             'vrsta'         => ['String', 'vrsta', 'usluga | proizvod'],
-            'cijena'        => ['Float', 'cijena', 'Redovna cijena'],
-            'sidrenaCijena' => ['Float', 'sidrena_cijena', 'Dodatna (sidrena) cijena'],
+            'cijena'        => ['Float', 'cijena', 'Osnovna redovna cijena'],
+            'sidrenaCijena' => ['Float', 'sidrena_cijena', 'Osnovna dodatna (sidrena) cijena'],
             'sidrenaDatum'  => ['String', 'sidrena_datum', 'Datum sidrene cijene (YYYY-MM-DD)'],
-            'akcija'        => ['CjenikAkcija', 'akcija', 'Akcija ili null'],
+            'akcija'        => ['CjenikAkcija', 'akcija', 'Osnovna akcija ili null'],
             'jedinicaMjere' => ['String', 'jedinica_mjere', 'Jedinica mjere'],
             'dostupnost'    => ['String', 'dostupnost', 'dostupno | nedostupno (samo proizvodi)'],
+            'lokacije'      => [['list_of' => 'CjenikStavkaLokacija'], 'lokacije', 'Lokacije na kojima se stavka nudi, s cijenama'],
         ])]);
 
         register_graphql_object_type('CjenikKategorija', ['description' => 'Kategorija cjenika', 'fields' => $map([
@@ -570,7 +883,11 @@ HTML;
         ])]);
 
         register_graphql_object_type('CjenikDatoteka', ['description' => 'Generirana CSV/XML datoteka', 'fields' => $map([
+            'objekt'     => ['String', 'objekt', 'ID lokacije'],
             'vrsta'      => ['String', 'vrsta', 'usluga | proizvod'],
+            'lokacija'   => ['String', 'lokacija', 'Naziv lokacije'],
+            'adresa'     => ['String', 'adresa', 'Adresa lokacije'],
+            'oznaka'     => ['String', 'oznaka', 'Oznaka lokacije'],
             'naziv'      => ['String', 'naziv', 'Naziv datoteke bez ekstenzije'],
             'objavljeno' => ['String', 'objavljeno', 'Vrijeme objave (ISO 8601)'],
             'csv'        => ['String', 'csv', 'URL CSV datoteke'],
@@ -579,7 +896,8 @@ HTML;
 
         register_graphql_object_type('Cjenik', ['description' => 'Cjenik sa sidrenim cijenama', 'fields' => $map([
             'kategorije' => [['list_of' => 'CjenikKategorija'], 'kategorije', 'Kategorije sa stavkama'],
-            'datoteke'   => [['list_of' => 'CjenikDatoteka'], 'datoteke', 'Trenutno važeće datoteke'],
+            'objekti'    => [['list_of' => 'CjenikObjekt'], 'objekti', 'Lokacije'],
+            'datoteke'   => [['list_of' => 'CjenikDatoteka'], 'datoteke', 'Trenutno važeće datoteke, jedna po lokaciji'],
             'arhiva'     => [['list_of' => 'CjenikDatoteka'], 'arhiva', 'Arhiva prethodnih datoteka'],
         ])]);
 
@@ -590,19 +908,39 @@ HTML;
         ]);
     }
 
+    /* ---------- Settings ---------- */
+
     public static function settings() {
-        return wp_parse_args(get_option(self::OPT, []), [
-            'subjekt' => get_bloginfo('name'), 'adresa' => '',
-            'usluga_oblik' => 'centar', 'usluga_oznaka' => 'U-01',
-            'proizvod_oblik' => 'webshop', 'proizvod_oznaka' => 'W-01',
-            'revalidate_url' => '',
+        $s = wp_parse_args(get_option(self::OPT, []), [
+            'subjekt' => get_bloginfo('name'), 'objekti' => [], 'revalidate_url' => '',
         ]);
+        $s['objekti'] = is_array($s['objekti']) ? $s['objekti'] : [];
+        return $s;
     }
 
     public static function sanitize_settings($in) {
-        $out = [];
-        foreach (array_keys(self::settings()) as $k) {
-            $out[$k] = $k === 'revalidate_url' ? esc_url_raw($in[$k] ?? '') : sanitize_text_field($in[$k] ?? '');
+        $in = (array) $in;
+        $out = [
+            'subjekt' => sanitize_text_field($in['subjekt'] ?? ''),
+            'objekti' => [],
+            'revalidate_url' => esc_url_raw($in['revalidate_url'] ?? ''),
+        ];
+        $ids = $names = [];
+        foreach ((array) ($in['objekti'] ?? []) as $row) {
+            if (!is_array($row)) continue;
+            $o = [];
+            foreach (self::$objekt_fields as $k) $o[$k] = sanitize_text_field($row[$k] ?? '');
+            if (!array_filter($o)) continue;
+            $id = sanitize_key($row['id'] ?? '');
+            if ($id === '' || isset($ids[$id])) $id = 'o' . substr(md5(uniqid('', true)), 0, 8);
+            $ids[$id] = true;
+            $o = ['id' => $id, 'vrsta' => in_array($row['vrsta'] ?? '', self::TIPOVI, true) ? $row['vrsta'] : 'usluga'] + $o;
+            $name = mb_strtolower(implode('_', [$o['oblik'], $o['adresa'], $o['oznaka']]));
+            if (isset($names[$name]) && function_exists('add_settings_error')) {
+                add_settings_error(self::OPT, 'sc_dup', sprintf('Lokacije "%s" i "%s" imaju isti oblik, adresu i oznaku, pa bi im datoteke imale isti naziv. Promijenite oznaku jedne od njih.', $names[$name], self::objekt_label($o)));
+            }
+            $names[$name] = self::objekt_label($o);
+            $out['objekti'][] = $o;
         }
         return $out;
     }
@@ -613,26 +951,43 @@ HTML;
 
     private static function type_info($type) {
         return $type === 'proizvod'
-            ? ['title' => 'Cjenik proizvoda', 'plural' => 'proizvoda',
-               'rule' => 'Propis: objavljuje se jednom dnevno, najkasnije do 8:00. Plugin ga objavljuje svaki dan u 6:30 i kod svake promjene.']
-            : ['title' => 'Cjenik usluga', 'plural' => 'usluga',
-               'rule' => 'Propis: objavljuje se kod svake promjene cijene, najkasnije do 8:00 na dan kad promjena stupa na snagu. Plugin ga objavljuje odmah kod spremanja, a zakazane promjene u 6:30.'];
+            ? ['title' => 'Cjenik proizvoda', 'plural' => 'proizvoda', 'option' => 'Proizvodi (prodajni objekt)',
+               'rule' => 'Propis: objavljuje se jednom dnevno, najkasnije do 8:00, zasebno za svaku lokaciju i webshop. Plugin ga objavljuje svaki dan u 6:30 i kod svake promjene.']
+            : ['title' => 'Cjenik usluga', 'plural' => 'usluga', 'option' => 'Usluge (uslužni objekt)',
+               'rule' => 'Propis: objavljuje se kod svake promjene cijene, najkasnije do 8:00 na dan kad promjena stupa na snagu, zasebno za svaku lokaciju. Plugin ga objavljuje odmah kod spremanja, a zakazane promjene u 6:30.'];
     }
 
     private static function health_checks() {
         $out = [];
-        $s = self::settings();
-        if (trim($s['adresa']) === '') $out[] = ['error', 'Adresa objekta nije upisana. Propis traži adresu u nazivu datoteke.'];
+        $objekti = self::objekti();
+        if (!$objekti) $out[] = ['error', 'Nema nijedne lokacije. Dodajte barem jednu u odjeljku "Lokacije" niže, inače se cjenik ne objavljuje.'];
+        foreach (self::TIPOVI as $type) {
+            $count = count(self::items($type));
+            if ($count && !self::objekti($type)) {
+                $out[] = ['error', sprintf('Imate %d %s, ali nijednu lokaciju za %s. Dodajte lokaciju i u stupcu "Cjenik" odaberite "%s".',
+                    $count, $type === 'proizvod' ? self::plural($count, 'proizvod', 'proizvoda', 'proizvoda') : self::plural($count, 'uslugu', 'usluge', 'usluga'),
+                    mb_strtolower(self::type_info($type)['title']), self::type_info($type)['option'])];
+            }
+        }
+        $names = [];
+        foreach ($objekti as $o) {
+            $label = self::objekt_label($o);
+            if (trim($o['adresa']) === '') $out[] = ['error', sprintf('Lokacija "%s" nema adresu. Propis traži adresu u nazivu datoteke.', esc_html($label))];
+            if (trim($o['oblik']) === '' || trim($o['oznaka']) === '') $out[] = ['warning', sprintf('Lokaciji "%s" nedostaje oblik ili oznaka objekta.', esc_html($label))];
+            $name = mb_strtolower(implode('_', [$o['oblik'], $o['adresa'], $o['oznaka']]));
+            if (isset($names[$name])) $out[] = ['error', sprintf('Lokacije "%s" i "%s" imaju isti naziv datoteke. Promijenite oznaku jedne od njih.', esc_html($names[$name]), esc_html($label))];
+            $names[$name] = $label;
+        }
         if (wp_timezone_string() !== 'Europe/Zagreb') {
             $out[] = ['warning', sprintf('Vremenska zona je "%s". Postavite Zagreb u <a href="%s">Settings → General</a>, inače se cjenik objavljuje u krivo vrijeme.',
                 esc_html(wp_timezone_string()), esc_url(admin_url('options-general.php')))];
         }
-        $products = self::items('proizvod');
+        $has_products = self::items('proizvod') && self::objekti('proizvod');
         $last = (int) get_option('sc_zadnji_cron', 0);
-        if ($products && $last && $last < time() - 26 * HOUR_IN_SECONDS) {
+        if ($has_products && $last && $last < time() - 26 * HOUR_IN_SECONDS) {
             $out[] = ['error', sprintf('Dnevna objava cjenika proizvoda zadnji put je pokrenuta %s. Provjerite serverski cron.', esc_html(wp_date('d.m.Y. \u H:i', $last)))];
         }
-        if ($products && !defined('DISABLE_WP_CRON')) {
+        if ($has_products && !defined('DISABLE_WP_CRON')) {
             $out[] = ['info', 'Dnevna objava ovisi o WP-Cronu, koji se pokreće samo kad netko posjeti stranicu. Za pouzdanu objavu prije 8:00 postavite serverski cron (upute u README).'];
         }
         $missing = 0;
@@ -648,42 +1003,63 @@ HTML;
         return $out;
     }
 
+    private static function objekt_row($i, array $o) {
+        $name = self::OPT . "[objekti][$i]";
+        $input = fn($k, $placeholder) => printf('<td><input type="text" name="%s[%s]" value="%s" placeholder="%s" aria-label="%s"></td>',
+            esc_attr($name), esc_attr($k), esc_attr($o[$k] ?? ''), esc_attr($placeholder), esc_attr(ucfirst($k)));
+        printf('<tr%s><td><input type="hidden" name="%s[id]" value="%s"><select name="%s[vrsta]" aria-label="Vrsta cjenika">',
+            !empty($o['id']) ? ' data-saved="1"' : '', esc_attr($name), esc_attr($o['id'] ?? ''), esc_attr($name));
+        foreach (self::TIPOVI as $k) {
+            printf('<option value="%s"%s>%s</option>', esc_attr($k), selected($o['vrsta'] ?? 'usluga', $k, false), esc_html(self::type_info($k)['option']));
+        }
+        echo '</select></td>';
+        $input('naziv', 'npr. Kabinet Zagreb');
+        $input('oblik', 'npr. kabinet, prodavaonica, webshop');
+        $input('adresa', 'npr. Ilica 150 Zagreb');
+        $input('oznaka', 'npr. U-01');
+        echo '<td><button type="button" class="button-link sc-remove-objekt" aria-label="Ukloni lokaciju"><span class="dashicons dashicons-trash"></span></button></td></tr>';
+    }
+
     public static function settings_page() {
         $s = self::settings();
         $f = self::files();
         $field = fn($k, $l, $h = '') => printf('<tr><th><label for="sc-%2$s">%1$s</label></th><td><input class="regular-text" id="sc-%2$s" name="%3$s[%2$s]" value="%4$s"><p class="description">%5$s</p></td></tr>',
             esc_html($l), esc_attr($k), self::OPT, esc_attr($s[$k]), esc_html($h));
-        $preview = fn($type) => printf('<tr><th>Primjer naziva datoteke</th><td><code>%s.csv</code></td></tr>',
-            esc_html(self::file_base($type, (int) get_option("sc_broj_$type", 0) + 1)));
 
         echo self::settings_css();
         echo '<div class="wrap sc-settings"><h1>Objava cjenika</h1>';
+        settings_errors(self::OPT);
         if (isset($_GET['sc_ok'])) {
-            $msg = $_GET['sc_ok'] === 'reset' ? 'Svi stari cjenici su obrisani i objavljen je novi.' : 'Cjenik je objavljen.';
+            $msg = $_GET['sc_ok'] === 'reset' ? 'Svi stari cjenici su obrisani i objavljeni su novi.' : 'Cjenici su objavljeni.';
             echo '<div class="notice notice-success is-dismissible"><p>' . esc_html($msg) . '</p></div>';
         }
         foreach (self::health_checks() as [$type, $msg]) {
             printf('<div class="notice notice-%s inline"><p>%s</p></div>', esc_attr($type), wp_kses_post($msg));
         }
 
-        echo '<div class="sc-cards">';
         foreach (self::TIPOVI as $type) {
+            $list = self::objekti($type);
+            if (!$list) continue;
             $info = self::type_info($type);
-            $count = count(self::items($type));
-            $current = $f['trenutni'][$type] ?? null;
-            printf('<div class="sc-card"><h2>%s</h2>', esc_html($info['title']));
-            if (!$count) {
-                printf('<p class="sc-muted">Nema %s u ponudi, pa ovaj cjenik nije potreban.</p>', esc_html($info['plural']));
-            } elseif ($current) {
-                printf('<p><span class="sc-badge">Objavljen</span> %s · %d %s</p><p><code>%s</code></p><p><a class="button" href="%s" target="_blank">CSV</a> <a class="button" href="%s" target="_blank">XML</a></p>',
-                    esc_html(wp_date('d.m.Y. \u H:i', strtotime($current['objavljeno']))), $count, self::plural($count, 'stavka', 'stavke', 'stavki'),
-                    esc_html($current['naziv']), esc_url($current['csv']), esc_url($current['xml']));
-            } else {
-                echo '<p><span class="sc-badge is-warning">Nije objavljen</span> Kliknite "Objavi cjenike sada".</p>';
+            printf('<h2>%s</h2><p class="description">%s</p><div class="sc-cards">', esc_html($info['title']), esc_html($info['rule']));
+            foreach ($list as $o) {
+                $count = count(self::rows($o));
+                $current = $f['trenutni'][$o['id']] ?? null;
+                printf('<div class="sc-card"><h3>%s</h3><p class="sc-muted">%s</p>', esc_html(self::objekt_label($o)),
+                    esc_html(implode(' · ', array_filter([$o['oblik'], $o['adresa'], $o['oznaka']]))));
+                if (!$count && !$current) {
+                    printf('<p class="sc-muted">Nema %s na ovoj lokaciji, pa cjenik nije potreban.</p>', esc_html($info['plural']));
+                } elseif ($current) {
+                    printf('<p><span class="sc-badge">Objavljen</span> %s · %d %s</p><p><code>%s</code></p><p><a class="button" href="%s" target="_blank">CSV</a> <a class="button" href="%s" target="_blank">XML</a></p>',
+                        esc_html(wp_date('d.m.Y. \u H:i', strtotime($current['objavljeno']))), $count, self::plural($count, 'stavka', 'stavke', 'stavki'),
+                        esc_html($current['naziv']), esc_url($current['csv']), esc_url($current['xml']));
+                } else {
+                    echo '<p><span class="sc-badge is-warning">Nije objavljen</span> Kliknite "Objavi cjenike sada".</p>';
+                }
+                echo '</div>';
             }
-            printf('<p class="description">%s</p></div>', esc_html($info['rule']));
+            echo '</div>';
         }
-        echo '</div>';
 
         $next = wp_next_scheduled(self::CRON);
         printf('<form method="post" action="%s" class="sc-actions"><input type="hidden" name="action" value="sc_generiraj">%s', esc_url(admin_url('admin-post.php')), wp_nonce_field('sc_gen', '_wpnonce', true, false));
@@ -694,17 +1070,19 @@ HTML;
         echo '<form method="post" action="options.php">';
         settings_fields('sc_group');
         echo '<h2>Podaci o subjektu</h2><table class="form-table">';
-        $field('subjekt', 'Naziv subjekta', 'Upisuje se u XML datoteku.');
-        $field('adresa', 'Adresa objekta', 'Npr. Ilica 150 Zagreb. Ulazi u naziv datoteke.');
-        echo '</table><h2>Cjenik usluga</h2><table class="form-table">';
-        $field('usluga_oblik', 'Oblik uslužnog objekta', 'Npr. centar, ordinacija, salon, servis.');
-        $field('usluga_oznaka', 'Oznaka uslužnog objekta', 'Npr. U-01. Ako nemate internu oznaku, upišite U-01 ili 01.');
-        $preview('usluga');
-        echo '</table><h2>Cjenik proizvoda</h2><table class="form-table">';
-        $field('proizvod_oblik', 'Oblik prodajnog objekta', 'Za online prodaju (npr. digitalnih materijala) upišite webshop.');
-        $field('proizvod_oznaka', 'Oznaka prodajnog objekta', 'Npr. W-01.');
-        $preview('proizvod');
-        echo '</table><h2>Headless frontend</h2><table class="form-table">';
+        $field('subjekt', 'Naziv subjekta', 'Upisuje se u XML datoteke.');
+        echo '</table>';
+
+        echo '<h2>Lokacije</h2><p class="description">Svaka lokacija dobiva svoj cjenik, jer propis traži zasebnu datoteku za svaku poslovnicu, kabinet ili webshop, čak i kad su cijene iste. Ako na istoj adresi imate i usluge i proizvode, dodajte dvije lokacije (npr. U-01 i P-01).</p>';
+        echo '<table class="widefat sc-objekti"><thead><tr><th>Cjenik</th><th>Naziv lokacije</th><th>Oblik objekta</th><th>Adresa</th><th>Oznaka</th><th></th></tr></thead><tbody>';
+        $objekti = $s['objekti'] ?: [[]];
+        foreach (array_values($objekti) as $i => $o) self::objekt_row($i, $o);
+        echo '</tbody></table><template id="sc-objekt-row">';
+        self::objekt_row('__i__', []);
+        echo '</template><p><button type="button" class="button sc-add-objekt">+ Dodaj lokaciju</button></p>';
+        echo '<p class="description">Naziv datoteke: <code>oblik_adresa_oznaka_brojpohrane_datum_vrijeme</code>. Uklanjanjem lokacije prestaje objava njezinog cjenika, a stari cjenici ostaju u arhivi još ' . (int) self::ARHIVA_DANA . ' dana.</p>';
+
+        echo '<h2>Headless frontend</h2><table class="form-table">';
         $field('revalidate_url', 'Revalidate URL (neobavezno)', 'Poziva se nakon svake objave cjenika, za osvježavanje cachea na frontendu.');
         echo '</table>';
         submit_button('Spremi postavke');
@@ -714,34 +1092,67 @@ HTML;
         if (!$f['arhiva']) {
             echo '<p class="sc-muted">Arhiva je prazna.</p>';
         } else {
-            echo '<table class="widefat striped sc-archive"><thead><tr><th>Cjenik</th><th>Objavljen</th><th>Datoteka</th><th></th></tr></thead><tbody>';
+            echo '<table class="widefat striped sc-archive"><thead><tr><th>Lokacija</th><th>Cjenik</th><th>Objavljen</th><th>Datoteka</th><th></th></tr></thead><tbody>';
             foreach ($f['arhiva'] as $e) {
-                printf('<tr><td>%s</td><td>%s</td><td><code>%s</code></td><td><a href="%s" target="_blank">CSV</a> · <a href="%s" target="_blank">XML</a></td></tr>',
-                    esc_html(self::type_info($e['vrsta'])['title']), esc_html(wp_date('d.m.Y. H:i', strtotime($e['objavljeno']))),
+                printf('<tr><td>%s</td><td>%s</td><td>%s</td><td><code>%s</code></td><td><a href="%s" target="_blank">CSV</a> · <a href="%s" target="_blank">XML</a></td></tr>',
+                    esc_html($e['lokacija']), esc_html(self::type_info($e['vrsta'])['title']), esc_html(wp_date('d.m.Y. H:i', strtotime($e['objavljeno']))),
                     esc_html($e['naziv']), esc_url($e['csv']), esc_url($e['xml']));
             }
             echo '</tbody></table>';
         }
 
-        echo '<div class="sc-danger"><h2>Kreni ispočetka</h2><p>Briše sve objavljene cjenike i arhivu, vraća broj pohrane na 1 i objavljuje novi cjenik. Koristite samo prije puštanja stranice u rad, npr. za brisanje testnih cjenika.</p>';
+        echo '<div class="sc-danger"><h2>Kreni ispočetka</h2><p>Briše sve objavljene cjenike i arhivu, vraća brojeve pohrane na 1 i objavljuje nove cjenike. Koristite samo prije puštanja stranice u rad, npr. za brisanje testnih cjenika.</p>';
         printf('<form method="post" action="%s"><input type="hidden" name="action" value="sc_reset">%s', esc_url(admin_url('admin-post.php')), wp_nonce_field('sc_reset', '_wpnonce', true, false));
         submit_button('Obriši sve cjenike i kreni ispočetka', 'delete', 'submit', false, ['onclick' => "return confirm('Obrisati sve cjenike i arhivu? Ovo se ne može poništiti.')"]);
         echo '</form></div></div>';
+        echo self::settings_js();
+    }
+
+    private static function settings_js() {
+        return <<<'HTML'
+<script>
+(function () {
+    var table = document.querySelector('.sc-objekti tbody');
+    var template = document.getElementById('sc-objekt-row');
+    if (!table || !template) return;
+    document.querySelector('.sc-add-objekt').addEventListener('click', function () {
+        table.insertAdjacentHTML('beforeend', template.innerHTML.replace(/__i__/g, 'n' + Date.now()));
+        table.lastElementChild.querySelector('input[type="text"]').focus();
+    });
+    table.addEventListener('click', function (e) {
+        var button = e.target.closest('.sc-remove-objekt');
+        if (!button) return;
+        var row = button.closest('tr');
+        if (row.dataset.saved && !confirm('Ukloniti lokaciju? Njezin cjenik se više neće objavljivati. Promjena vrijedi nakon "Spremi postavke".')) return;
+        row.remove();
+    });
+})();
+</script>
+HTML;
     }
 
     private static function settings_css() {
         return <<<'HTML'
 <style>
-.sc-settings .sc-cards { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0; }
+.sc-settings .sc-cards { display: flex; flex-wrap: wrap; gap: 16px; margin: 16px 0 24px; }
 .sc-settings .sc-card { flex: 1 1 320px; max-width: 560px; background: #fff; border: 1px solid #dcdcde; border-radius: 4px; padding: 16px 20px; }
-.sc-settings .sc-card h2 { margin-top: 0; }
+.sc-settings .sc-card h3 { margin: 0 0 4px; }
 .sc-settings .sc-card code { word-break: break-all; }
 .sc-settings .sc-muted { color: #646970; }
 .sc-settings .sc-badge { display: inline-block; padding: 2px 8px; margin-right: 6px; border-radius: 10px; background: #edfaef; color: #00450c; font-size: 12px; font-weight: 600; }
 .sc-settings .sc-badge.is-warning { background: #fcf9e8; color: #614200; }
 .sc-settings .sc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 24px; }
-.sc-settings .sc-archive { max-width: 1100px; }
+.sc-settings .sc-objekti { max-width: 1200px; }
+.sc-settings .sc-objekti input[type="text"], .sc-settings .sc-objekti select { width: 100%; }
+.sc-settings .sc-objekti td:last-child { width: 32px; vertical-align: middle; }
+.sc-settings .sc-remove-objekt { color: #b32d2e; }
+.sc-settings .sc-archive { max-width: 1200px; }
 .sc-settings .sc-danger { margin-top: 32px; padding-top: 8px; border-top: 1px solid #dcdcde; }
+@media (max-width: 782px) {
+    .sc-settings .sc-objekti thead { display: none; }
+    .sc-settings .sc-objekti tr { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; border-bottom: 1px solid #dcdcde; }
+    .sc-settings .sc-objekti td { display: block; flex: 1 1 45%; padding: 0; }
+}
 </style>
 HTML;
     }
@@ -758,20 +1169,24 @@ HTML;
         foreach (['csv', 'xml'] as $ext) {
             foreach (glob(self::dir() . "/*.$ext") ?: [] as $file) unlink($file);
         }
-        delete_option(self::REG);
-        foreach (self::TIPOVI as $type) {
-            delete_option("sc_broj_$type");
-            delete_option("sc_hash_$type");
+        $ids = array_merge(array_column(self::objekti(), 'id'), array_column(get_option(self::REG, []), 'objekt'), self::TIPOVI);
+        foreach (array_unique(array_filter($ids)) as $id) {
+            delete_option("sc_broj_$id");
+            delete_option("sc_hash_$id");
         }
+        delete_option(self::REG);
         self::regenerate(self::TIPOVI, true);
         wp_safe_redirect(admin_url('edit.php?post_type=' . self::CPT . '&page=sc-postavke&sc_ok=reset'));
         exit;
     }
 
+    /* ---------- Item list ---------- */
+
     public static function columns($cols) {
         $cols['sc_vrsta'] = 'Vrsta';
         $cols['sc_cijena'] = 'Cijena';
         $cols['sc_sidrena'] = 'Dodatna (sidrena) cijena';
+        if (count(self::objekti()) > 1) $cols['sc_lokacije'] = 'Lokacije';
         return $cols;
     }
 
@@ -788,6 +1203,16 @@ HTML;
             $sid = $m('sidrena_cijena');
             echo $sid === '' ? '<span style="color:#d63638">nedostaje</span>'
                 : esc_html(self::eur($sid) . ' (' . self::fmt_date($m('sidrena_datum')) . ')');
+        }
+        if ($col === 'sc_lokacije') {
+            $list = self::objekti($m('vrsta') ?: 'usluga');
+            $offered = array_filter($list, fn($o) => self::is_offered_at($id, $o['id']));
+            $overrides = self::overrides($id);
+            if (!$list) { echo '<span style="color:#d63638">nema lokacije</span>'; return; }
+            if (!$offered) { echo '<span style="color:#d63638">nigdje</span>'; return; }
+            echo count($offered) === count($list) ? 'Sve' : esc_html(implode(', ', array_map([__CLASS__, 'objekt_label'], $offered)));
+            $custom = array_filter($offered, fn($o) => !empty($overrides[$o['id']]));
+            if ($custom) printf('<br><small>Vlastite postavke: %s</small>', esc_html(implode(', ', array_map([__CLASS__, 'objekt_label'], $custom))));
         }
     }
 
@@ -811,6 +1236,8 @@ HTML;
         $type = sanitize_key($_GET['sc_vrsta'] ?? '');
         if (in_array($type, self::TIPOVI, true)) $query->set('meta_query', [['key' => 'sc_vrsta', 'value' => $type]]);
     }
+
+    /* ---------- Updates from GitHub Releases ---------- */
 
     public static function check_update($update, $plugin_data, $plugin_file) {
         if ($plugin_file !== plugin_basename(__FILE__)) return $update;
@@ -863,6 +1290,8 @@ HTML;
     private static function github_token() {
         return defined('SC_GITHUB_TOKEN') ? SC_GITHUB_TOKEN : '';
     }
+
+    /* ---------- Helpers ---------- */
 
     private static function dir() {
         $d = wp_upload_dir()['basedir'] . '/' . self::DIR;
