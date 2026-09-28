@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sidrena cijena i cjenik
  * Description: Unos usluga i proizvoda s dodatnom (sidrenom) cijenom, automatsko generiranje CSV/XML cjenika po lokacijama prema NN 101/2026 i REST + WPGraphQL API za headless frontend.
- * Version: 1.2.0
+ * Version: 1.2.1
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * License: GPL-2.0-or-later
@@ -78,6 +78,10 @@ final class Sidrena_Cjenik {
         add_filter('views_edit-' . self::CPT, [__CLASS__, 'views']);
         add_action('pre_get_posts', [__CLASS__, 'filter_list']);
         add_action('admin_notices', [__CLASS__, 'admin_notices']);
+        add_action('admin_enqueue_scripts', [__CLASS__, 'list_assets']);
+        add_action('wp_ajax_sc_reorder', [__CLASS__, 'ajax_reorder']);
+        // Price lists are short; one page keeps drag-and-drop ordering simple.
+        add_filter('edit_' . self::CPT . '_per_page', fn() => 500);
         add_filter('update_plugins_github.com', [__CLASS__, 'check_update'], 10, 3);
         add_filter('upgrader_pre_download', [__CLASS__, 'download_private'], 10, 2);
         add_filter('upgrader_source_selection', [__CLASS__, 'keep_folder_name'], 10, 4);
@@ -619,10 +623,14 @@ HTML;
             $changed_types = array_values(array_unique(array_column($changed, 'vrsta')));
             $changed_ids   = array_column($changed, 'id');
             do_action('sc_cjenik_azuriran', $changed_types, $changed_ids);
-            $url = self::settings()['revalidate_url'];
-            if ($url) wp_remote_post($url, ['blocking' => false, 'timeout' => 3, 'body' => ['tipovi' => $changed_types, 'objekti' => $changed_ids]]);
+            self::revalidate_frontend($changed_types, $changed_ids);
         }
         return array_column($changed, 'id');
+    }
+
+    private static function revalidate_frontend(array $types, array $objekt_ids) {
+        $url = self::settings()['revalidate_url'];
+        if ($url) wp_remote_post($url, ['blocking' => false, 'timeout' => 3, 'body' => ['tipovi' => $types, 'objekti' => $objekt_ids]]);
     }
 
     private static function items($type = null) {
@@ -1183,6 +1191,8 @@ HTML;
     /* ---------- Item list ---------- */
 
     public static function columns($cols) {
+        $cb = isset($cols['cb']) ? ['cb' => $cols['cb']] : [];
+        $cols = $cb + ['sc_order' => '<span class="screen-reader-text">Redoslijed</span>'] + $cols;
         $cols['sc_vrsta'] = 'Vrsta';
         $cols['sc_cijena'] = 'Cijena';
         $cols['sc_sidrena'] = 'Dodatna (sidrena) cijena';
@@ -1192,6 +1202,9 @@ HTML;
 
     public static function column($col, $id) {
         $m = fn($k) => (string) get_post_meta($id, 'sc_' . $k, true);
+        if ($col === 'sc_order' && self::is_reorderable()) {
+            echo '<span class="dashicons dashicons-menu sc-drag" title="Povucite za promjenu redoslijeda" aria-hidden="true"></span>';
+        }
         if ($col === 'sc_vrsta') echo esc_html($m('vrsta') === 'proizvod' ? 'Proizvod' : 'Usluga');
         if ($col === 'sc_cijena') {
             if ($m('cijena') === '') echo '<span style="color:#d63638">nedostaje</span>';
@@ -1239,6 +1252,73 @@ HTML;
         if (!is_admin() || !$query->is_main_query() || $query->get('post_type') !== self::CPT) return;
         $type = sanitize_key($_GET['sc_vrsta'] ?? '');
         if (in_array($type, self::TIPOVI, true)) $query->set('meta_query', [['key' => 'sc_vrsta', 'value' => $type]]);
+        // Same order as the published price list, unless the user sorts by a column.
+        if (empty($_GET['orderby'])) $query->set('orderby', ['menu_order' => 'ASC', 'title' => 'ASC']);
+    }
+
+    private static function is_reorderable() {
+        return empty($_GET['orderby']) || $_GET['orderby'] === 'menu_order';
+    }
+
+    public static function list_assets($hook) {
+        $screen = get_current_screen();
+        if ($hook !== 'edit.php' || !$screen || $screen->post_type !== self::CPT) return;
+        wp_register_style('sc-list', false);
+        wp_enqueue_style('sc-list');
+        wp_add_inline_style('sc-list', '.column-sc_order { width: 24px; } .sc-drag { cursor: move; color: #8c8f94; } .sc-drag:hover { color: #2271b1; }'
+            . ' .sc-sort-placeholder { height: 56px; background: #f0f6fc; outline: 1px dashed #2271b1; } #the-list tr.ui-sortable-helper { background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.15); }');
+        if (!self::is_reorderable()) return;
+        wp_enqueue_script('jquery-ui-sortable');
+        wp_add_inline_script('jquery-ui-sortable', 'window.scReorder = ' . wp_json_encode(['nonce' => wp_create_nonce('sc_reorder')]) . ';' . self::reorder_js());
+    }
+
+    private static function reorder_js() {
+        return <<<'JS'
+jQuery(function ($) {
+    var $list = $('#the-list');
+    if (!$list.length || !$list.find('.sc-drag').length) return;
+    $list.sortable({
+        handle: '.sc-drag',
+        items: '> tr',
+        axis: 'y',
+        placeholder: 'sc-sort-placeholder',
+        helper: function (e, tr) {
+            tr.children().each(function () { $(this).width($(this).width()); });
+            return tr;
+        },
+        update: function () {
+            var ids = $list.children('tr').map(function () { return this.id.replace('post-', ''); }).get();
+            $list.sortable('disable').css('opacity', 0.6);
+            $.post(window.ajaxurl, { action: 'sc_reorder', nonce: window.scReorder.nonce, ids: ids })
+                .fail(function () { alert('Redoslijed nije spremljen. Osvježite stranicu i pokušajte ponovno.'); })
+                .always(function () { $list.sortable('enable').css('opacity', 1); });
+        }
+    });
+});
+JS;
+    }
+
+    // Visible rows (possibly a filtered subset) are written back into the slots they already occupy in the full order.
+    public static function ajax_reorder() {
+        check_ajax_referer('sc_reorder', 'nonce');
+        if (!current_user_can('edit_posts')) wp_send_json_error(null, 403);
+        $all = array_map('intval', get_posts([
+            'post_type' => self::CPT, 'post_status' => ['publish', 'draft', 'pending', 'private', 'future'],
+            'numberposts' => -1, 'fields' => 'ids', 'orderby' => ['menu_order' => 'ASC', 'title' => 'ASC'],
+        ]));
+        $moved = array_values(array_intersect(array_unique(array_map('intval', (array) ($_POST['ids'] ?? []))), $all));
+        foreach (array_keys(array_intersect($all, $moved)) as $i => $slot) $all[$slot] = $moved[$i];
+
+        global $wpdb;
+        foreach (array_values($all) as $position => $post_id) {
+            if ((int) get_post_field('menu_order', $post_id) === $position || !current_user_can('edit_post', $post_id)) continue;
+            // Direct update: reordering alone should not publish a new price list on every drag.
+            $wpdb->update($wpdb->posts, ['menu_order' => $position], ['ID' => $post_id]);
+            clean_post_cache($post_id);
+        }
+        // The published files pick up the new order with the next publication; the site shows it right away.
+        self::revalidate_frontend(self::TIPOVI, array_column(self::objekti(), 'id'));
+        wp_send_json_success();
     }
 
     /* ---------- Updates from GitHub Releases ---------- */

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1] - 2026-09-28
+### Dodano
+- Redoslijed stavki mijenja se povlačenjem (drag and drop) u popisu stavki. Isti redoslijed koriste cjenici i API.
+- Nakon promjene redoslijeda poziva se revalidate URL frontenda.
+### Promijenjeno
+- Stupac "Lokacije" prikazuje nazive lokacija umjesto "Sve", te lokacije na kojima se stavka ne nudi.
+- Popis stavki po defaultu je složen po redoslijedu cjenika i prikazuje sve stavke na jednoj stranici.
+
 ## [1.2.0] - 2026-09-28
 ### Dodano
 - Više lokacija (uslužnih i prodajnih objekata). Svaka ima svoj cjenik, broj pohrane i arhivu.
