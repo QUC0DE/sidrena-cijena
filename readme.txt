@@ -3,12 +3,14 @@ Tags: sidrena cijena, cjenik, headless, graphql
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.3.1
+Stable tag: 1.3.2
 License: GPLv2 or later
 
 Bazna cijena i strojno čitljivi CSV/XML cjenik prema pravilnicima iz NN 132/2026, za headless WordPress.
 
 == Changelog ==
+= 1.3.2 =
+* Postavka "Čuvanje arhive (dana)", najmanje 15. Arhiva se računa od zamjene novim cjenikom.
 = 1.3.1 =
 * Opcija za dnevnu objavu cjenika proizvoda u 6:30, i kad se ništa nije promijenilo (uključena po defaultu).
 = 1.3.0 =

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.2] - 2026-11-17
+### Dodano
+- Postavka "Čuvanje arhive (dana)" u Objava i postavke. Zadano 45, najmanje 15 (NN 132/2026, čl. 3. st. 6.).
+### Ispravljeno
+- Rok arhive računa se od zamjene novim cjenikom, a ne od objave starog cjenika.
+
 ## [1.3.1] - 2026-11-17
 ### Dodano
 - Postavka "Dnevna objava": cjenik proizvoda objavljuje se svaki dan u 6:30, i kad se ništa nije promijenilo. Uključena je po defaultu, kao prije 1.3.0. Propis to ne traži, pa se može isključiti.

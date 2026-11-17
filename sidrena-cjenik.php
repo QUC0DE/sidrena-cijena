@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sidrena cijena i cjenik
  * Description: Unos usluga i proizvoda s baznom cijenom, automatsko generiranje CSV/XML cjenika po lokacijama prema Pravilniku o načinu objave cjenika proizvoda (NN 132/2026) i REST + WPGraphQL API za headless frontend.
- * Version: 1.3.1
+ * Version: 1.3.2
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * License: GPL-2.0-or-later
@@ -23,6 +23,8 @@ final class Sidrena_Cjenik {
     const DEFAULT_DATUM = '2026-09-10';
     const CSV_SEP      = ';';
     const ARHIVA_DANA  = 45;
+    // Pravilnik NN 132/2026, čl. 3. st. 6.: archive stays available at least 15 days from replacement.
+    const ARHIVA_MIN_DANA = 15;
     // Part of every file hash: bumping it republishes all price lists in the new format on the next run.
     const FORMAT       = 2;
     const REPO         = 'QUC0DE/sidrena-cijena';
@@ -757,13 +759,29 @@ HTML;
         return $current;
     }
 
+    // Registry is chronological: a file is replaced when the next file of the same location is published.
+    private static function replaced_times(array $reg) {
+        $next = $out = [];
+        foreach (array_reverse($reg, true) as $i => $e) {
+            $id = $e['objekt'] ?? '';
+            $out[$i] = $next[$id] ?? $e['vrijeme'];
+            $next[$id] = $e['vrijeme'];
+        }
+        return $out;
+    }
+
+    private static function archive_days() {
+        return max(self::ARHIVA_MIN_DANA, (int) self::settings()['arhiva_dana']);
+    }
+
     private static function cleanup() {
-        $reg = get_option(self::REG, []);
-        $limit = time() - self::ARHIVA_DANA * DAY_IN_SECONDS;
+        $reg = array_values(get_option(self::REG, []));
+        $limit = time() - self::archive_days() * DAY_IN_SECONDS;
         $current = self::current_names($reg);
+        $replaced = self::replaced_times($reg);
         $keep = [];
-        foreach ($reg as $e) {
-            if ($e['vrijeme'] < $limit && !in_array($e['naziv'], $current, true)) {
+        foreach ($reg as $i => $e) {
+            if ($replaced[$i] < $limit && !in_array($e['naziv'], $current, true)) {
                 foreach (['csv', 'xml'] as $ext) @unlink(self::dir() . "/{$e['naziv']}.$ext");
             } else {
                 $keep[] = $e;
@@ -942,6 +960,7 @@ HTML;
     public static function settings() {
         $s = wp_parse_args(get_option(self::OPT, []), [
             'subjekt' => get_bloginfo('name'), 'oib' => '', 'objekti' => [], 'revalidate_url' => '', 'dnevna_objava' => '1',
+            'arhiva_dana' => self::ARHIVA_DANA,
         ]);
         $s['objekti'] = is_array($s['objekti']) ? $s['objekti'] : [];
         return $s;
@@ -955,6 +974,7 @@ HTML;
             'objekti' => [],
             'revalidate_url' => esc_url_raw($in['revalidate_url'] ?? ''),
             'dnevna_objava' => empty($in['dnevna_objava']) ? '' : '1',
+            'arhiva_dana' => max(self::ARHIVA_MIN_DANA, (int) ($in['arhiva_dana'] ?? self::ARHIVA_DANA)),
         ];
         $ids = $names = [];
         foreach ((array) ($in['objekti'] ?? []) as $row) {
@@ -1116,12 +1136,17 @@ HTML;
         echo '</tbody></table><template id="sc-objekt-row">';
         self::objekt_row('__i__', []);
         echo '</template><p><button type="button" class="button sc-add-objekt">+ Dodaj lokaciju</button></p>';
-        echo '<p class="description">Naziv datoteke: <code>OIB_oblik_adresa_oznaka_ROBA|USLUGA_brojpohrane_GGGGMMDD_SSMM</code>, bez razmaka i dijakritika. Uklanjanjem lokacije prestaje objava njezinog cjenika, a stari cjenici ostaju u arhivi još ' . (int) self::ARHIVA_DANA . ' dana.</p>';
+        echo '<p class="description">Naziv datoteke: <code>OIB_oblik_adresa_oznaka_ROBA|USLUGA_brojpohrane_GGGGMMDD_SSMM</code>, bez razmaka i dijakritika. Uklanjanjem lokacije prestaje objava njezinog cjenika, a stari cjenici ostaju u arhivi još ' . self::archive_days() . ' dana.</p>';
 
         echo '<h2>Dnevna objava</h2><table class="form-table"><tr><th>Cjenik proizvoda</th><td>';
         printf('<label><input type="checkbox" name="%s[dnevna_objava]" value="1"%s> Objavi cjenik proizvoda svaki dan u 6:30, i kad se ništa nije promijenilo</label>',
             esc_attr(self::OPT), checked($s['dnevna_objava'], '1', false));
         echo '<p class="description">Propis (NN 132/2026) traži novi cjenik samo kod promjene, do 11:00 na dan izmjene. Dnevna objava je dodatna sigurnost, a arhiva se zbog nje brže puni.</p></td></tr></table>';
+
+        echo '<h2>Arhiva</h2><table class="form-table"><tr><th><label for="sc-arhiva-dana">Čuvanje arhive (dana)</label></th><td>';
+        printf('<input type="number" id="sc-arhiva-dana" name="%s[arhiva_dana]" value="%d" min="%d" step="1" class="small-text">',
+            esc_attr(self::OPT), self::archive_days(), self::ARHIVA_MIN_DANA);
+        printf('<p class="description">Koliko dana zamijenjeni cjenik ostaje javno dostupan, računajući od dana zamjene novim cjenikom. Propis (NN 132/2026) traži najmanje %d dana, pa manja vrijednost nije moguća.</p></td></tr></table>', self::ARHIVA_MIN_DANA);
 
         echo '<h2>Headless frontend</h2><table class="form-table">';
         $field('revalidate_url', 'Revalidate URL (neobavezno)', 'Poziva se nakon svake objave cjenika, za osvježavanje cachea na frontendu.');
@@ -1129,7 +1154,7 @@ HTML;
         submit_button('Spremi postavke');
         echo '</form>';
 
-        printf('<h2>Arhiva</h2><p class="description">Prethodni cjenici ostaju javno dostupni %d dana (propis traži najmanje 15 od zamjene novim cjenikom).</p>', (int) self::ARHIVA_DANA);
+        printf('<h2>Arhivirani cjenici</h2><p class="description">Prethodni cjenici ostaju javno dostupni %d dana od zamjene novim cjenikom.</p>', self::archive_days());
         if (!$f['arhiva']) {
             echo '<p class="sc-muted">Arhiva je prazna.</p>';
         } else {

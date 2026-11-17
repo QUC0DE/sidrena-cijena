@@ -20,7 +20,7 @@ Namijenjen je stranicama **bez WooCommercea** i **headless** postavu (REST ili W
 - Upozorenja za obvezne podatke i pregled uživo kako cijena izgleda na stranici
 - Automatsko generiranje CSV/XML kod svake promjene cijene, a za proizvode po želji i svaki dan u 6:30 (postavka "Dnevna objava")
 - Nazivi datoteka po propisu: `OIB_oblik_adresa_oznaka_ROBA|USLUGA_brojpohrane_GGGGMMDD_SSMM`
-- Arhiva prethodnih cjenika (45 dana)
+- Arhiva prethodnih cjenika (zadano 45 dana, podesivo u postavkama, najmanje 15)
 - Gumb za brisanje svih cjenika i ponovni početak numeracije (npr. nakon testiranja)
 - REST: `/wp-json/cjenik/v1/stavke`, `/wp-json/cjenik/v1/datoteke`, `/wp-json/cjenik/v1/objekti`
 - WPGraphQL: root polje `cjenik`
@@ -55,7 +55,7 @@ Svaka lokacija dobiva zasebnu datoteku cjenika. Lokacije se dodaju u **Cjenik �
 
 - Svaka lokacija je jedan cjenik: uslužni objekt za usluge ili prodajni objekt za proizvode. Ako se na istoj adresi prodaje oboje, dodaju se dvije lokacije.
 - Stavka se po defaultu nudi na svim lokacijama svoje vrste, pa i na onima koje se dodaju kasnije. U stavci se lokacija može isključiti ili joj se može dati vlastita cijena, bazna cijena, akcija ili raspoloživost. Prazno polje znači da vrijedi osnovna vrijednost.
-- Svaka lokacija ima svoj broj pohrane. Uklonjena lokacija više se ne objavljuje, a njezini stari cjenici ostaju u arhivi 45 dana.
+- Svaka lokacija ima svoj broj pohrane. Uklonjena lokacija više se ne objavljuje, a njezini stari cjenici ostaju u arhivi koliko je postavljeno (zadano 45 dana).
 - Kod nadogradnje s 1.1.x postojeće postavke postaju lokacije `usluga-1` i `proizvod-1`, a brojevi pohrane i arhiva se nastavljaju.
 
 ## Instalacija
