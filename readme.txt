@@ -3,12 +3,14 @@ Tags: sidrena cijena, cjenik, headless, graphql
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.2.1
+Stable tag: 1.3.0
 License: GPLv2 or later
 
-Dodatna (sidrena) cijena i strojno čitljivi CSV/XML cjenik prema NN 101/2026, za headless WordPress.
+Bazna cijena i strojno čitljivi CSV/XML cjenik prema pravilnicima iz NN 132/2026, za headless WordPress.
 
 == Changelog ==
+= 1.3.0 =
+* Usklađeno s Pravilnikom o načinu objave cjenika proizvoda (NN 132/2026): OIB u nazivu datoteke, točka-zarez, propisani stupci, rok 11:00.
 = 1.2.1 =
 * Drag and drop redoslijed stavki, stupac "Lokacije" prikazuje nazive lokacija.
 = 1.2.0 =

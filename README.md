@@ -1,25 +1,25 @@
 # Sidrena cijena i cjenik
 
-WordPress plugin za obveze iz **NN 101/2026** (na snazi od 1. 10. 2026.):
+WordPress plugin za obveze iz Zakona o zaštiti potrošača i pravilnika iz **NN 132/2026** (na snazi od 17. 11. 2026.):
 
-- isticanje **dodatne (sidrene) cijene** uz svaku cijenu,
-- objava **strojno čitljivog cjenika** (CSV + XML) na mrežnoj stranici, s arhivom od najmanje 30 dana.
+- isticanje **bazne cijene** uz svaku cijenu (Pravilnik o isticanju bazne cijene proizvoda),
+- objava **strojno čitljivog cjenika** (CSV + XML) na mrežnoj stranici, s arhivom od najmanje 15 dana (Pravilnik o načinu objave cjenika proizvoda).
 
 Namijenjen je stranicama **bez WooCommercea** i **headless** postavu (REST ili WPGraphQL). Radi za bilo koji broj lokacija: jedan kabinet, lanac poslovnica, webshop ili sve zajedno.
 
 > Plugin je tehničko pomagalo, a ne pravni savjet. Točnost cijena (stanje na 10. 9. 2026.) potvrđuje vlasnik stranice.
-> Službeni izvor: [Pojašnjenja Ministarstva gospodarstva](https://mingo.gov.hr/vijesti/pojasnjenja-za-primjenu-dodatne-cijene-i-objavu-cjenika-od-1-listopada/10440)
+> Službeni izvor: [NN 132/2026](https://narodne-novine.nn.hr/eli/sluzbeni/2026/132/pdf) i [vijest Ministarstva gospodarstva](https://mingo.gov.hr/vijesti/pravilnici-o-baznim-cijenama-i-objavi-cjenika-veca-transparentnost-za-potrosace-provediva-pravila-za-gospodarstvo/10490)
 
 ## Značajke
 
-- Izbornik **Cjenik** u adminu: usluge i proizvodi, sidrena cijena i datum, akcija (naziv, najniža cijena u 30 dana), kategorije, filtri po vrsti
+- Izbornik **Cjenik** u adminu: usluge i proizvodi, bazna cijena i datum, akcija (naziv, najniža cijena u 30 dana), kategorije, filtri po vrsti
 - **Više lokacija**: svaka poslovnica, kabinet ili webshop ima svoj cjenik, broj pohrane i arhivu
-- Po stavci: na kojim se lokacijama nudi, te vlastita cijena, dodatna cijena, akcija i raspoloživost po lokaciji
-- Izbor "Kada je stavka uvedena u ponudu?": za nove stavke sidrena cijena i datum postave se sami
+- Po stavci: na kojim se lokacijama nudi, te vlastita cijena, bazna cijena, akcija i raspoloživost po lokaciji
+- Izbor "Kada je stavka uvedena u ponudu?": za nove stavke bazna cijena i datum postave se sami
 - Zakazana promjena cijene (primjenjuje se i objavljuje u 6:30 na dan kad vrijedi)
 - Upozorenja za obvezne podatke i pregled uživo kako cijena izgleda na stranici
-- Automatsko generiranje CSV/XML kod svake promjene, a za proizvode i svaki dan u 6:30
-- Nazivi datoteka po propisu: `oblik_adresa_oznaka_brojpohrane_dd.mm.gggg_hh:mm`
+- Automatsko generiranje CSV/XML kod svake promjene cijene
+- Nazivi datoteka po propisu: `OIB_oblik_adresa_oznaka_ROBA|USLUGA_brojpohrane_GGGGMMDD_SSMM`
 - Arhiva prethodnih cjenika (45 dana)
 - Gumb za brisanje svih cjenika i ponovni početak numeracije (npr. nakon testiranja)
 - REST: `/wp-json/cjenik/v1/stavke`, `/wp-json/cjenik/v1/datoteke`, `/wp-json/cjenik/v1/objekti`
@@ -28,21 +28,24 @@ Namijenjen je stranicama **bez WooCommercea** i **headless** postavu (REST ili W
 
 ## Što propis traži
 
-Izvor: [Odluka o objavi cjenika, NN 101/2026](https://narodne-novine.nn.hr/clanci/sluzbeni/2026_09_101_1213.html) i pojašnjenja Ministarstva gospodarstva.
+Izvor: Pravilnik o isticanju bazne cijene proizvoda i Pravilnik o načinu objave cjenika proizvoda, [NN 132/2026](https://narodne-novine.nn.hr/eli/sluzbeni/2026/132/pdf). Odluke iz NN 101/2026 prestale su važiti.
 
-| | Cjenik proizvoda | Cjenik usluga |
+| | Cjenik proizvoda (robe) | Cjenik usluga |
 |---|---|---|
-| Kada | jednom dnevno, do 8:00 | kod svake promjene, do 8:00 na dan kad promjena vrijedi |
-| Stupci | naziv, šifra, marka, jedinica mjere, cijena za JM, maloprodajna cijena, posebni oblik prodaje i njegov naziv, sidrena cijena, barkod, dostupnost | naziv, maloprodajna cijena, posebni oblik prodaje i njegov naziv, sidrena cijena |
-| Naziv datoteke | `oblik_adresa_oznaka_brojpohrane_dd.mm.gggg_hh:mm` | isto |
+| Kada | kod svake promjene, najkasnije do 11:00 na dan izmjene | isto |
+| Stupci (tim redoslijedom) | naziv, šifra, marka, neto količina, jedinica mjere, maloprodajna cijena, posebni oblik prodaje (DA/NE), cijena za JM, barkod, EAN barkod, bazna cijena | naziv, maloprodajna cijena, posebni oblik prodaje (DA/NE), bazna cijena |
+| Format | `.csv` (UTF-8, odvojeno s `;`) ili `.xml`, smije `.zip`/`.gz` | isto |
+| Naziv datoteke | `OIB_oblik_adresa_oznaka_ROBA_brojpohrane_GGGGMMDD_SSMM` | `..._USLUGA_...` |
 
-- Proizvodi i usluge imaju **odvojene datoteke**, a svaka lokacija i webshop svoju datoteku.
-- Arhiva: najmanje 30 dana od objave.
-- Na stranici se sidrena cijena ističe **uz** redovnu cijenu, na istom cjeniku, ne na posebnom. Dovoljno je napisati "Cijena na 10. 9. 2026.: X €".
+- Svaka lokacija i webshop ima svoju datoteku, osim ako trgovac ima isti cjenik na svim prodajnim mjestima (tada `ZA_SVA_PRODAJNA_MJESTA`, plugin to zasad ne radi).
+- Arhiva: najmanje 15 dana od zamjene novim cjenikom.
+- Podaci se moraju moći preuzimati automatski (bez prijave i blokiranja botova).
+- Bazna cijena je cijena na dan 10. 9. 2026. (hrana, piće, kozmetika, sredstva za čišćenje, toaletne potrepštine i proizvodi za kućanstvo: 2. 5. 2025.), za stavke uvedene kasnije cijena na dan uvođenja. Ako je stavka tog dana bila na akciji, bazna je redovna cijena, ne snižena.
+- Na stranici se bazna cijena ističe **uz** maloprodajnu cijenu, nedvosmisleno, npr. "Bazna cijena (10. 9. 2026.): X €".
 
 ## Lokacije
 
-Propis traži zasebnu datoteku cjenika za svaku lokaciju, i kad su cijene iste. Lokacije se dodaju u **Cjenik → Objava i postavke → Lokacije**:
+Svaka lokacija dobiva zasebnu datoteku cjenika. Lokacije se dodaju u **Cjenik → Objava i postavke → Lokacije**:
 
 | Cjenik | Naziv | Oblik | Adresa | Oznaka |
 |---|---|---|---|---|
@@ -51,7 +54,7 @@ Propis traži zasebnu datoteku cjenika za svaku lokaciju, i kad su cijene iste. 
 | Proizvodi | Webshop | webshop | Ilica 150 Zagreb | W-01 |
 
 - Svaka lokacija je jedan cjenik: uslužni objekt za usluge ili prodajni objekt za proizvode. Ako se na istoj adresi prodaje oboje, dodaju se dvije lokacije.
-- Stavka se po defaultu nudi na svim lokacijama svoje vrste, pa i na onima koje se dodaju kasnije. U stavci se lokacija može isključiti ili joj se može dati vlastita cijena, dodatna cijena, akcija ili raspoloživost. Prazno polje znači da vrijedi osnovna vrijednost.
+- Stavka se po defaultu nudi na svim lokacijama svoje vrste, pa i na onima koje se dodaju kasnije. U stavci se lokacija može isključiti ili joj se može dati vlastita cijena, bazna cijena, akcija ili raspoloživost. Prazno polje znači da vrijedi osnovna vrijednost.
 - Svaka lokacija ima svoj broj pohrane. Uklonjena lokacija više se ne objavljuje, a njezini stari cjenici ostaju u arhivi 45 dana.
 - Kod nadogradnje s 1.1.x postojeće postavke postaju lokacije `usluga-1` i `proizvod-1`, a brojevi pohrane i arhiva se nastavljaju.
 
@@ -60,7 +63,7 @@ Propis traži zasebnu datoteku cjenika za svaku lokaciju, i kad su cijene iste. 
 1. Preuzmite zip iz [Releases](../../releases) ili klonirajte repo u `wp-content/plugins/sidrena-cjenik`.
 2. Aktivirajte plugin.
 3. **Settings → General:** vremenska zona Zagreb.
-4. **Cjenik → Objava i postavke:** naziv subjekta i lokacije (oblik, adresa i oznaka objekta).
+4. **Cjenik → Objava i postavke:** naziv subjekta, OIB (ili matični broj obrta) i lokacije (oblik, adresa i oznaka objekta).
 5. Serverski cron umjesto WP-Crona:
    ```php
    // wp-config.php

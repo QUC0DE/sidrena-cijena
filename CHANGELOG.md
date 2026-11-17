@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.3.0] - 2026-11-17
+Usklađeno s pravilnicima koji vrijede od 17. 11. 2026. (NN 132/2026) umjesto ukinutih odluka iz NN 101/2026.
+### Dodano
+- Postavka "OIB / matični broj" i provjera da je upisan.
+- Polja "Neto količina" i "EAN barkod" za proizvode.
+### Promijenjeno
+- Naziv datoteke: `OIB_oblik_adresa_oznaka_ROBA|USLUGA_brojpohrane_GGGGMMDD_SSMM`, bez razmaka i dijakritika.
+- CSV: stupci odvojeni točkom-zarezom, bez BOM-a.
+- Stupci po propisanom redoslijedu. Proizvodi: naziv, šifra, marka, neto količina, jedinica mjere, maloprodajna cijena, posebni oblik prodaje, cijena za jedinicu mjere, barkod, EAN barkod, bazna cijena. Usluge: naziv, maloprodajna cijena, posebni oblik prodaje, bazna cijena. Uklonjeni su naziv akcije, datum i raspoloživost.
+- Cjenik se objavljuje samo kad se promijeni (više ne svaki dan). Dnevni cron u 6:30 i dalje primjenjuje zakazane promjene.
+- "Dodatna (sidrena) cijena" je u adminu "Bazna cijena". Nazivi polja u API-ju (`sidrenaCijena`, `sidrenaDatum`) ostaju isti.
+- Nakon nadogradnje svi se cjenici ponovno objavljuju u novom formatu kod sljedećeg spremanja ili dnevnog crona.
+
 ## [1.2.1] - 2026-09-28
 ### Dodano
 - Redoslijed stavki mijenja se povlačenjem (drag and drop) u popisu stavki. Isti redoslijed koriste cjenici i API.

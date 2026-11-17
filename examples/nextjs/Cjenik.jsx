@@ -46,8 +46,7 @@ export default async function Cjenik({ objekt } = {}) {
                 ) : (
                   <strong>{eur(c.cijena)}</strong>
                 )}
-                {/* The ministry recommends labelling the anchor price with its date only. */}
-                <small>Cijena na {dan(s.sidrenaDatum)}: {eur(c.sidrenaCijena)}</small>
+                <small>Bazna cijena ({dan(s.sidrenaDatum)}): {eur(c.sidrenaCijena)}</small>
               </div>
             ))}
           </div>
