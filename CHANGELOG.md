@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.1] - 2026-11-17
+### Dodano
+- Postavka "Dnevna objava": cjenik proizvoda objavljuje se svaki dan u 6:30, i kad se ništa nije promijenilo. Uključena je po defaultu, kao prije 1.3.0. Propis to ne traži, pa se može isključiti.
+
 ## [1.3.0] - 2026-11-17
 Usklađeno s pravilnicima koji vrijede od 17. 11. 2026. (NN 132/2026) umjesto ukinutih odluka iz NN 101/2026.
 ### Dodano

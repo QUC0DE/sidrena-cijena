@@ -18,7 +18,7 @@ Namijenjen je stranicama **bez WooCommercea** i **headless** postavu (REST ili W
 - Izbor "Kada je stavka uvedena u ponudu?": za nove stavke bazna cijena i datum postave se sami
 - Zakazana promjena cijene (primjenjuje se i objavljuje u 6:30 na dan kad vrijedi)
 - Upozorenja za obvezne podatke i pregled uživo kako cijena izgleda na stranici
-- Automatsko generiranje CSV/XML kod svake promjene cijene
+- Automatsko generiranje CSV/XML kod svake promjene cijene, a za proizvode po želji i svaki dan u 6:30 (postavka "Dnevna objava")
 - Nazivi datoteka po propisu: `OIB_oblik_adresa_oznaka_ROBA|USLUGA_brojpohrane_GGGGMMDD_SSMM`
 - Arhiva prethodnih cjenika (45 dana)
 - Gumb za brisanje svih cjenika i ponovni početak numeracije (npr. nakon testiranja)

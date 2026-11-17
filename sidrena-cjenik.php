@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Sidrena cijena i cjenik
  * Description: Unos usluga i proizvoda s baznom cijenom, automatsko generiranje CSV/XML cjenika po lokacijama prema Pravilniku o načinu objave cjenika proizvoda (NN 132/2026) i REST + WPGraphQL API za headless frontend.
- * Version: 1.3.0
+ * Version: 1.3.1
  * Requires PHP: 7.4
  * Requires at least: 6.0
  * License: GPL-2.0-or-later
@@ -586,7 +586,7 @@ HTML;
     // Runs every day at 06:30, well before the 11:00 deadline, so scheduled price changes get published.
     public static function cron() {
         self::apply_scheduled();
-        self::regenerate(self::TIPOVI);
+        self::regenerate(self::TIPOVI, self::settings()['dnevna_objava'] ? ['proizvod'] : false);
         update_option('sc_zadnji_cron', time(), false);
         self::schedule_cron();
     }
@@ -941,7 +941,7 @@ HTML;
 
     public static function settings() {
         $s = wp_parse_args(get_option(self::OPT, []), [
-            'subjekt' => get_bloginfo('name'), 'oib' => '', 'objekti' => [], 'revalidate_url' => '',
+            'subjekt' => get_bloginfo('name'), 'oib' => '', 'objekti' => [], 'revalidate_url' => '', 'dnevna_objava' => '1',
         ]);
         $s['objekti'] = is_array($s['objekti']) ? $s['objekti'] : [];
         return $s;
@@ -954,6 +954,7 @@ HTML;
             'oib'     => preg_replace('/\D+/', '', (string) ($in['oib'] ?? '')),
             'objekti' => [],
             'revalidate_url' => esc_url_raw($in['revalidate_url'] ?? ''),
+            'dnevna_objava' => empty($in['dnevna_objava']) ? '' : '1',
         ];
         $ids = $names = [];
         foreach ((array) ($in['objekti'] ?? []) as $row) {
@@ -982,7 +983,8 @@ HTML;
     private static function type_info($type) {
         return $type === 'proizvod'
             ? ['title' => 'Cjenik proizvoda', 'plural' => 'proizvoda', 'option' => 'Proizvodi (prodajni objekt)',
-               'rule' => 'Propis: izmijenjeni cjenik objavljuje se najkasnije do 11:00 na dan izmjene, zasebno za svaku lokaciju i webshop. Plugin ga objavljuje odmah kod spremanja, a zakazane promjene u 6:30.']
+               'rule' => 'Propis: izmijenjeni cjenik objavljuje se najkasnije do 11:00 na dan izmjene, zasebno za svaku lokaciju i webshop. Plugin ga objavljuje odmah kod spremanja, a zakazane promjene u 6:30.'
+                   . (self::settings()['dnevna_objava'] ? ' Uključena je i dnevna objava u 6:30, i kad se ništa nije promijenilo.' : '')]
             : ['title' => 'Cjenik usluga', 'plural' => 'usluga', 'option' => 'Usluge (uslužni objekt)',
                'rule' => 'Propis: izmijenjeni cjenik objavljuje se najkasnije do 11:00 na dan izmjene, zasebno za svaku lokaciju. Plugin ga objavljuje odmah kod spremanja, a zakazane promjene u 6:30.'];
     }
@@ -1115,6 +1117,11 @@ HTML;
         self::objekt_row('__i__', []);
         echo '</template><p><button type="button" class="button sc-add-objekt">+ Dodaj lokaciju</button></p>';
         echo '<p class="description">Naziv datoteke: <code>OIB_oblik_adresa_oznaka_ROBA|USLUGA_brojpohrane_GGGGMMDD_SSMM</code>, bez razmaka i dijakritika. Uklanjanjem lokacije prestaje objava njezinog cjenika, a stari cjenici ostaju u arhivi još ' . (int) self::ARHIVA_DANA . ' dana.</p>';
+
+        echo '<h2>Dnevna objava</h2><table class="form-table"><tr><th>Cjenik proizvoda</th><td>';
+        printf('<label><input type="checkbox" name="%s[dnevna_objava]" value="1"%s> Objavi cjenik proizvoda svaki dan u 6:30, i kad se ništa nije promijenilo</label>',
+            esc_attr(self::OPT), checked($s['dnevna_objava'], '1', false));
+        echo '<p class="description">Propis (NN 132/2026) traži novi cjenik samo kod promjene, do 11:00 na dan izmjene. Dnevna objava je dodatna sigurnost, a arhiva se zbog nje brže puni.</p></td></tr></table>';
 
         echo '<h2>Headless frontend</h2><table class="form-table">';
         $field('revalidate_url', 'Revalidate URL (neobavezno)', 'Poziva se nakon svake objave cjenika, za osvježavanje cachea na frontendu.');
